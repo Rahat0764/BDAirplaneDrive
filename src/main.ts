@@ -43,7 +43,6 @@ class DreamFlightApp {
   private clock = new THREE.Clock();
   private elapsed = 0;
 
-  // Adaptive resolution & FPS monitor
   private currentFps = 60;
   private fpsFrames = 0;
   private fpsAccumTime = 0;
@@ -58,21 +57,20 @@ class DreamFlightApp {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: initialQuality.id !== 'low',
+      antialias: true,
       powerPreference: 'high-performance',
       stencil: false,
       depth: true,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.toneMappingExposure = 1.09;
     this.renderer.shadowMap.enabled = initialQuality.shadowsEnabled;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.updateRendererSize();
 
     this.scene = new THREE.Scene();
 
-    // Initialize World, Aircraft, Physics, Controls, Camera, Audio, Gameplay & UI
     this.sky = new SkyAtmosphere(this.renderer, this.scene, initialQuality);
     this.clouds = new CloudSystem(this.scene, initialQuality);
     this.terrain = new TerrainSystem(this.scene, initialQuality);
@@ -95,14 +93,17 @@ class DreamFlightApp {
       this.audio,
       this.gameplay,
       {
-        onStartFlight: (mode: GameplayModeId, startOnRunway = false) => {
+        onStartFlight: (
+          mode: GameplayModeId,
+          specialSpawn: 'none' | 'runway' | 'highway' = 'none'
+        ) => {
           this.flightStarted = true;
           this.clouds.setGameplayMode(mode);
           this.gameplay.startMode(
             mode,
             this.physics,
             () => this.audio.playUiChime(true),
-            startOnRunway
+            specialSpawn
           );
           this.aircraft.resetTrails(this.physics.telemetry.position);
           this.cameraSys.snapToAircraft(this.physics.telemetry);
@@ -128,7 +129,6 @@ class DreamFlightApp {
       }
     );
 
-    // Apply signature opening scene ("Afternoon Canyon" — giant white cumulus canyon + blue sky + Moon!)
     this.applyAtmosphere('afternoon_moon');
     this.aircraft.resetTrails(this.physics.telemetry.position);
     this.cameraSys.snapToAircraft(this.physics.telemetry);
@@ -137,11 +137,8 @@ class DreamFlightApp {
     window.addEventListener('orientationchange', () => {
       window.setTimeout(() => this.onResize(), 120);
     });
-
-    // Prevent browser context menu or accidental pinch-zoom scrolling during flight
     window.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // Expose safe diagnostic hook for automated verification
     (window as unknown as Record<string, unknown>).__DREAM_FLIGHT__ = {
       getTelemetry: () => this.physics.telemetry,
       getAtmosphere: () => this.activeAtmosphereId,
@@ -232,8 +229,6 @@ class DreamFlightApp {
 
     if (!inMenu && inputs.switchCamera) {
       const nextCam = this.cameraSys.cycleMode();
-      const camBtn = document.getElementById('btn-hud-cam');
-      if (camBtn) camBtn.textContent = `🎥 ${CAMERA_LABELS[nextCam]}`;
       this.ui.showToast(`Camera: ${CAMERA_LABELS[nextCam]}`);
     }
 
@@ -246,15 +241,23 @@ class DreamFlightApp {
     const cloudDensity = this.clouds.getCloudDensityAt(this.physics.telemetry.position);
 
     if (!inMenu) {
-      // Active Player Flight!
       this.physics.update(
         dt,
         inputs,
         (x, z) => this.terrain.getTerrainHeight(x, z),
+        (x, z) => this.terrain.getWaterSurfaceHeight(x, z),
+        (x, z) => this.terrain.classifySurface(x, z),
         cloudDensity
       );
+
+      const h = this.physics.telemetry.haptics;
+      this.input.processFlightHaptics(dt, h, this.physics.telemetry.stalling);
+      if (h.touchdownIntensity > 0.05) {
+        this.audio.playTouchdownSound(h.touchdownIntensity, false);
+      } else if (h.scrapeIntensity > 0.05) {
+        this.audio.playTouchdownSound(h.scrapeIntensity, this.physics.telemetry.surfaceType === 'water');
+      }
     } else if (!this.flightStarted) {
-      // Opening Showcase Scene: Gently glide down the Grand Cloud Canyon & loop seamlessly if reaching far north!
       const showcaseIn = {
         ...inputs,
         pitch: Math.sin(this.elapsed * 0.35) * 0.03,
@@ -272,6 +275,8 @@ class DreamFlightApp {
         dt * 0.75,
         showcaseIn,
         (x, z) => this.terrain.getTerrainHeight(x, z),
+        (x, z) => this.terrain.getWaterSurfaceHeight(x, z),
+        (x, z) => this.terrain.classifySurface(x, z),
         cloudDensity
       );
       if (this.physics.telemetry.position.z < -4800) {
@@ -283,7 +288,6 @@ class DreamFlightApp {
       }
     }
 
-    // Dynamically thicken world fog when flying through dense volumetric clouds!
     if (this.scene.fog instanceof THREE.FogExp2) {
       const targetFog = preset.fogDensity + cloudDensity * 0.0028;
       this.scene.fog.density += (targetFog - this.scene.fog.density) * Math.min(1, dt * 5.0);

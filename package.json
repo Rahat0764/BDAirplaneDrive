@@ -1,20 +1,24 @@
 {
   "name": "dream-flight",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "DREAM FLIGHT — A Beautiful, Relaxing, Photorealistic 3D Airplane Experience",
+  "description": "DREAM FLIGHT — A Peaceful, Photorealistic & Ghibli-Sunlit 3D Airplane Experience",
   "scripts": {
-    "dev": "vite --host",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host"
+    "dev": "node ./node_modules/vite/bin/vite.js --host",
+    "build": "node ./node_modules/typescript/bin/tsc --noEmit && node ./scripts/build.mjs",
+    "preview": "node ./node_modules/vite/bin/vite.js preview --host"
   },
   "dependencies": {
     "three": "^0.170.0"
   },
   "devDependencies": {
     "@types/three": "^0.170.0",
+    "rollup": "npm:@rollup/wasm-node@^4.24.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
+  },
+  "overrides": {
+    "rollup": "npm:@rollup/wasm-node@^4.24.0"
   }
 }

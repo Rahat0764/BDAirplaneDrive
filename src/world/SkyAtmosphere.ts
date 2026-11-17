@@ -272,19 +272,19 @@ export class SkyAtmosphere {
     this.envSkyMesh = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 20), this.material);
     this.envScene.add(this.envSkyMesh);
 
-    // Primary Directional Sun/Moon Light with soft cascaded-feel follow shadow frustum
-    this.sunLight = new THREE.DirectionalLight(0xfff9ed, 2.8);
+    // Primary Directional Sun/Moon Light with crisp Ghibli-clean shadow frustum
+    this.sunLight = new THREE.DirectionalLight(0xfffaf0, 3.1);
     this.sunLight.castShadow = quality.shadowsEnabled;
     this.sunLight.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
-    this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 1400;
-    const d = 180;
+    this.sunLight.shadow.camera.near = 8;
+    this.sunLight.shadow.camera.far = 1600;
+    const d = 230;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.00045;
-    this.sunLight.shadow.normalBias = 0.03;
+    this.sunLight.shadow.bias = -0.00032;
+    this.sunLight.shadow.normalBias = 0.022;
     scene.add(this.sunLight);
     scene.add(this.sunLight.target);
 

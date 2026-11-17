@@ -231,6 +231,29 @@ export class AudioSystem {
     osc.stop(now + 3.7);
   }
 
+  public playTouchdownSound(intensity: number, isWater = false): void {
+    if (!this.ctx || !this.initialized || !this.settings.masterEnabled) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    // Warm tire chirp/thump on asphalt or soft splash on water
+    const osc = ctx.createOscillator();
+    osc.type = isWater ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(isWater ? 165 : 95, now);
+    osc.frequency.exponentialRampToValueAtTime(isWater ? 58 : 38, now + 0.16);
+
+    const g = ctx.createGain();
+    const peak = Math.min(0.22, 0.06 + intensity * 0.14) * this.settings.engineVolume;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(Math.max(0.01, peak), now + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
   public playUiChime(higher = false): void {
     if (!this.ctx || !this.initialized || !this.settings.masterEnabled) return;
     const ctx = this.ctx;

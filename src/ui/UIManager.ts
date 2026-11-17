@@ -17,7 +17,7 @@ import { ATMOSPHERE_ORDER, ATMOSPHERE_PRESETS, GRAPHICS_PRESETS } from '../world
 type MenuTab = 'modes' | 'aircraft' | 'environment' | 'graphics' | 'controller' | 'audio';
 
 export interface UIHooks {
-  onStartFlight: (mode: GameplayModeId, startOnRunway?: boolean) => void;
+  onStartFlight: (mode: GameplayModeId, specialSpawn?: 'none' | 'runway' | 'highway') => void;
   onResumeFlight: () => void;
   onSelectAircraft: (variant: AircraftVariantId) => void;
   onSelectAtmosphere: (preset: AtmospherePresetId) => void;
@@ -36,28 +36,19 @@ export class UIManager {
   private bannerTitleEl!: HTMLElement;
   private bannerSubEl!: HTMLElement;
 
+  private menuFsFabEl!: HTMLButtonElement;
   private menuOverlayEl!: HTMLElement;
   private menuDetailEl!: HTMLElement;
   private primaryResumeBtn!: HTMLButtonElement;
+  private menuInlineFsBtn!: HTMLButtonElement;
 
   private hudLayerEl!: HTMLElement;
-  private telemClusterEl!: HTMLElement;
+  private metricsInlineEl!: HTMLElement;
   private horizonReticleEl!: HTMLElement;
   private horizonLineEl!: HTMLElement;
-  private quickActionsEl!: HTMLElement;
+  private actionsInlineEl!: HTMLElement;
+  private hudFsBtn!: HTMLButtonElement;
 
-  // Telemetry DOM refs
-  private spdValEl!: HTMLElement;
-  private altValEl!: HTMLElement;
-  private hdgValEl!: HTMLElement;
-  private vsiValEl!: HTMLElement;
-  private thrValEl!: HTMLElement;
-  private modeBadgeEl!: HTMLElement;
-  private gearBadgeEl!: HTMLElement;
-  private ctrlBadgeEl!: HTMLElement;
-  private wpBadgeEl!: HTMLElement;
-
-  // Touch DOM refs
   private touchWrapEl!: HTMLElement;
   private joyZoneEl!: HTMLElement;
   private joyKnobEl!: HTMLElement;
@@ -66,7 +57,7 @@ export class UIManager {
   private airbrakeTouchBtn!: HTMLButtonElement;
 
   private activeTab: MenuTab = 'modes';
-  private hudMode: HudModeId = 'full';
+  private hudMode: HudModeId = 'minimal';
   private inMenu = true;
   private hasStartedOnce = false;
   private remapWaitingLabel: string | null = null;
@@ -83,6 +74,7 @@ export class UIManager {
     this.cloudVeilEl = document.getElementById('cloud-veil')!;
     this.buildDom();
     this.bindTouchControls();
+    this.bindFullscreenSync();
     this.renderMenuDetail();
   }
 
@@ -93,6 +85,7 @@ export class UIManager {
   public openMenu(pausedFromFlight = false): void {
     this.inMenu = true;
     this.menuOverlayEl.classList.remove('hidden');
+    this.menuFsFabEl.classList.remove('hidden');
     this.hudLayerEl.classList.add('hidden');
     this.primaryResumeBtn.textContent = pausedFromFlight || this.hasStartedOnce ? 'Resume Flight' : 'Start Flight';
     this.renderMenuDetail();
@@ -104,6 +97,7 @@ export class UIManager {
     this.input.cancelRemapListen();
     this.remapWaitingLabel = null;
     this.menuOverlayEl.classList.add('hidden');
+    this.menuFsFabEl.classList.add('hidden');
     this.hudLayerEl.classList.remove('hidden');
     this.applyHudModeLayout();
   }
@@ -113,38 +107,88 @@ export class UIManager {
     el.className = 'toast-item';
     el.textContent = message;
     this.toastStackEl.appendChild(el);
-    window.setTimeout(() => {
-      el.remove();
-    }, 3400);
+    window.setTimeout(() => el.remove(), 3000);
   }
 
   public cycleHudMode(): void {
-    const order: HudModeId[] = ['full', 'minimal', 'immersive'];
-    this.hudMode = order[(order.indexOf(this.hudMode) + 1) % order.length];
+    this.hudMode = this.hudMode === 'minimal' ? 'immersive' : 'minimal';
     this.applyHudModeLayout();
-    const names: Record<HudModeId, string> = {
-      full: 'HUD: Full Aviation',
-      minimal: 'HUD: Minimal',
-      immersive: 'Immersive Cinema Mode (Tap HUD button to restore)',
-    };
-    this.showToast(names[this.hudMode]);
+    this.showToast(
+      this.hudMode === 'minimal'
+        ? '1-Line Minimal HUD'
+        : 'Immersive Pure View (Tap 👁 to show telemetry)'
+    );
   }
 
   private applyHudModeLayout(): void {
-    if (this.hudMode === 'full') {
-      this.telemClusterEl.style.display = 'flex';
+    if (this.hudMode === 'minimal') {
+      this.metricsInlineEl.style.visibility = 'visible';
       this.horizonReticleEl.style.display = 'block';
-      this.quickActionsEl.style.opacity = '1';
-    } else if (this.hudMode === 'minimal') {
-      this.telemClusterEl.style.display = 'flex';
-      this.horizonReticleEl.style.display = 'none';
-      this.quickActionsEl.style.opacity = '0.9';
+      this.actionsInlineEl.style.opacity = '1';
     } else {
-      // Immersive Mode: hides instruments & horizon so giant clouds & scenery fill the screen purely!
-      this.telemClusterEl.style.display = 'none';
+      this.metricsInlineEl.style.visibility = 'hidden';
       this.horizonReticleEl.style.display = 'none';
-      this.quickActionsEl.style.opacity = '0.38';
+      this.actionsInlineEl.style.opacity = '0.45';
     }
+  }
+
+  /**
+   * Requests true edge-to-edge URL-bar-hidden Fullscreen AND locks Android Chrome to Landscape!
+   */
+  public async enterOrToggleFullscreenLandscape(forceEnterOnly = false): Promise<void> {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element;
+      webkitExitFullscreen?: () => Promise<void>;
+    };
+    const docEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void>;
+    };
+
+    const isFs = Boolean(document.fullscreenElement || doc.webkitFullscreenElement);
+
+    if (isFs && !forceEnterOnly) {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen().catch(() => {});
+      } else if (doc.webkitExitFullscreen) {
+        await doc.webkitExitFullscreen().catch(() => {});
+      }
+      return;
+    }
+
+    try {
+      if (docEl.requestFullscreen) {
+        // navigationUI: 'hide' hides BOTH Android Chrome URL bar and system navigation bars!
+        await docEl.requestFullscreen({ navigationUI: 'hide' });
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      }
+    } catch {
+      // Ignore if browser blocks
+    }
+
+    // Lock to landscape AFTER fullscreen activates (required order for Android Chrome!)
+    try {
+      const scr = screen as unknown as {
+        orientation?: { lock?: (mode: string) => Promise<void> };
+      };
+      if (scr.orientation?.lock) {
+        await scr.orientation.lock('landscape').catch(() => scr.orientation?.lock?.('landscape-primary'));
+      }
+    } catch {
+      // Ignore on desktop browsers that don't support orientation lock
+    }
+  }
+
+  private bindFullscreenSync(): void {
+    const syncLabels = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element };
+      const isFs = Boolean(document.fullscreenElement || doc.webkitFullscreenElement);
+      this.menuFsFabEl.textContent = isFs ? '✕ Exit Full Screen' : '⛶ Full Screen + Landscape';
+      this.menuInlineFsBtn.textContent = isFs ? '✕ Exit Full' : '⛶ Full Screen';
+      this.hudFsBtn.textContent = isFs ? '✕' : '⛶ Full';
+    };
+    document.addEventListener('fullscreenchange', syncLabels);
+    document.addEventListener('webkitfullscreenchange', syncLabels);
   }
 
   private buildDom(): void {
@@ -156,63 +200,53 @@ export class UIManager {
         <p id="vista-sub"></p>
       </div>
 
+      <!-- Always-Accessible Floating Fullscreen + Landscape Button on Menu -->
+      <button class="menu-fs-fab" id="btn-menu-fs-fab">⛶ Full Screen + Landscape</button>
+
       <!-- Main Menu / Pause Overlay -->
       <div class="menu-overlay" id="menu-overlay">
         <div class="menu-sidebar">
           <div>
-            <div class="brand-eyebrow">Peaceful 3D Aviation</div>
+            <div class="brand-eyebrow">Ghibli-Sunlit 3D Aviation</div>
             <h1 class="brand-title">DREAM FLIGHT</h1>
             <p class="brand-subtitle">
-              Soar between towering white cumulus cathedrals, emerald valleys, oceans &amp; moonlit skies.
+              Fly between giant white cumulus cathedrals, sparkling rivers, landable valley highways &amp; moonlit skies.
             </p>
           </div>
 
-          <button class="primary-btn" id="btn-start-resume">Start Flight</button>
-
-          <div class="menu-nav-grid" id="menu-tabs">
-            <button class="nav-tab-btn active" data-tab="modes">Flight &amp; Routes</button>
-            <button class="nav-tab-btn" data-tab="environment">Sky &amp; Time</button>
-            <button class="nav-tab-btn" data-tab="aircraft">Aircraft</button>
-            <button class="nav-tab-btn" data-tab="controller">Controllers</button>
-            <button class="nav-tab-btn" data-tab="graphics">Graphics</button>
-            <button class="nav-tab-btn" data-tab="audio">Audio</button>
+          <div class="cta-row">
+            <button class="primary-btn" id="btn-start-resume">Start Flight</button>
+            <button class="fs-cta-btn" id="btn-menu-fs-inline" title="Hide URL bar &amp; rotate to Landscape">⛶ Full Screen</button>
           </div>
 
-          <div style="font-size:11.5px; color:var(--text-secondary); line-height:1.45; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px;">
-            <strong>Quick Controls:</strong> Touch Stick &amp; Throttle • PS4 / Bluetooth Gamepad • Desktop <code>WASD</code> / Arrows + <code>Shift/Ctrl</code> Throttle + <code>C</code> Camera
+          <div class="menu-nav-grid" id="menu-tabs">
+            <button class="nav-tab-btn active" data-tab="modes">Flight &amp; Roads</button>
+            <button class="nav-tab-btn" data-tab="environment">Sky &amp; Light</button>
+            <button class="nav-tab-btn" data-tab="aircraft">Aircraft</button>
+            <button class="nav-tab-btn" data-tab="controller">Controller &amp; Rumble</button>
+            <button class="nav-tab-btn" data-tab="graphics">Graphics</button>
+            <button class="nav-tab-btn" data-tab="audio">Audio</button>
           </div>
         </div>
 
         <div class="menu-detail-panel" id="menu-detail"></div>
       </div>
 
-      <!-- In-Flight HUD & Touch Controls -->
+      <!-- STRICTLY SINGLE-LINE ULTRA-MINIMAL IN-FLIGHT HUD -->
       <div class="hud-layer hidden" id="hud-layer">
-        <div class="hud-top-bar">
-          <div class="hud-QuickActions" id="hud-quick-actions">
-            <button class="hud-btn" id="btn-hud-pause">☰ Menu</button>
-            <button class="hud-btn" id="btn-hud-cam">🎥 Chase View</button>
-            <button class="hud-btn" id="btn-hud-gear">🛞 Gear: DN</button>
-            <button class="hud-btn" id="btn-hud-sky">🌤 Sky</button>
-            <button class="hud-btn" id="btn-hud-mode">👁 HUD</button>
-            <button class="hud-btn" id="btn-hud-reset">↺ Reset</button>
-            <button class="hud-btn" id="btn-hud-fs">⛶ Full</button>
+        <div class="hud-single-line">
+          <div class="hud-metrics-inline" id="hud-metrics-inline">
+            <span id="hud-txt-line">112 KT · 1,770 FT · 360° N · THR 68%</span>
           </div>
-        </div>
 
-        <div class="hud-telemetry-cluster" id="telem-cluster">
-          <div class="telem-grid">
-            <div class="telem-item"><span>Airspeed</span><strong id="val-spd">112 kts</strong></div>
-            <div class="telem-item"><span>Altitude</span><strong id="val-alt">1,770 ft</strong></div>
-            <div class="telem-item"><span>Heading</span><strong id="val-hdg">360° N</strong></div>
-            <div class="telem-item"><span>Vert Spd</span><strong id="val-vsi">+0 fpm</strong></div>
-          </div>
-          <div class="hud-badges">
-            <span class="mini-badge good" id="badge-thr">THR 68%</span>
-            <span class="mini-badge" id="badge-fmode">Relaxed</span>
-            <span class="mini-badge" id="badge-gear">GEAR DN</span>
-            <span class="mini-badge" id="badge-ctrl">Touch/Keys</span>
-            <span class="mini-badge good" id="badge-wp" style="display:none;"></span>
+          <div class="hud-actions-inline" id="hud-actions-inline">
+            <button class="hud-icon-btn" id="btn-hud-cam" title="Switch Camera">🎥</button>
+            <button class="hud-icon-btn" id="btn-hud-gear" title="Toggle Landing Gear">🛞 DN</button>
+            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-sky" title="Change Sky Time">🌤</button>
+            <button class="hud-icon-btn" id="btn-hud-mode" title="Toggle Immersive HUD">👁</button>
+            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-reset" title="Reset Plane">↺</button>
+            <button class="hud-icon-btn highlight-fs" id="btn-hud-fs" title="Full Screen &amp; Landscape">⛶ Full</button>
+            <button class="hud-icon-btn" id="btn-hud-pause" title="Menu">☰</button>
           </div>
         </div>
 
@@ -225,7 +259,6 @@ export class UIManager {
         <div class="touch-controls-wrap" id="touch-wrap">
           <div class="touch-joystick-zone" id="joy-zone">
             <div class="touch-joystick-knob" id="joy-knob"></div>
-            <div class="touch-zone-label">Pitch &amp; Roll</div>
           </div>
 
           <div class="touch-right-cluster">
@@ -248,25 +281,18 @@ export class UIManager {
     this.bannerTitleEl = document.getElementById('vista-title')!;
     this.bannerSubEl = document.getElementById('vista-sub')!;
 
+    this.menuFsFabEl = document.getElementById('btn-menu-fs-fab') as HTMLButtonElement;
     this.menuOverlayEl = document.getElementById('menu-overlay')!;
     this.menuDetailEl = document.getElementById('menu-detail')!;
     this.primaryResumeBtn = document.getElementById('btn-start-resume') as HTMLButtonElement;
+    this.menuInlineFsBtn = document.getElementById('btn-menu-fs-inline') as HTMLButtonElement;
 
     this.hudLayerEl = document.getElementById('hud-layer')!;
-    this.telemClusterEl = document.getElementById('telem-cluster')!;
+    this.metricsInlineEl = document.getElementById('hud-metrics-inline')!;
     this.horizonReticleEl = document.getElementById('horizon-reticle')!;
     this.horizonLineEl = document.getElementById('horizon-line')!;
-    this.quickActionsEl = document.getElementById('hud-quick-actions')!;
-
-    this.spdValEl = document.getElementById('val-spd')!;
-    this.altValEl = document.getElementById('val-alt')!;
-    this.hdgValEl = document.getElementById('val-hdg')!;
-    this.vsiValEl = document.getElementById('val-vsi')!;
-    this.thrValEl = document.getElementById('badge-thr')!;
-    this.modeBadgeEl = document.getElementById('badge-fmode')!;
-    this.gearBadgeEl = document.getElementById('badge-gear')!;
-    this.ctrlBadgeEl = document.getElementById('badge-ctrl')!;
-    this.wpBadgeEl = document.getElementById('badge-wp')!;
+    this.actionsInlineEl = document.getElementById('hud-actions-inline')!;
+    this.hudFsBtn = document.getElementById('btn-hud-fs') as HTMLButtonElement;
 
     this.touchWrapEl = document.getElementById('touch-wrap')!;
     this.joyZoneEl = document.getElementById('joy-zone')!;
@@ -275,7 +301,16 @@ export class UIManager {
     this.thrPctLabelEl = document.getElementById('thr-pct-lbl')!;
     this.airbrakeTouchBtn = document.getElementById('btn-touch-brake') as HTMLButtonElement;
 
-    // Bind Menu Events
+    // Dedicated Fullscreen + Landscape buttons!
+    const handleFsClick = () => {
+      this.audio.unlockAndStart();
+      this.audio.playUiChime(true);
+      this.enterOrToggleFullscreenLandscape(false);
+    };
+    this.menuFsFabEl.addEventListener('click', handleFsClick);
+    this.menuInlineFsBtn.addEventListener('click', handleFsClick);
+    this.hudFsBtn.addEventListener('click', handleFsClick);
+
     this.primaryResumeBtn.addEventListener('click', () => {
       this.audio.unlockAndStart();
       this.audio.playUiChime(true);
@@ -284,7 +319,7 @@ export class UIManager {
         this.hooks.onResumeFlight();
       } else {
         this.closeMenu();
-        this.hooks.onStartFlight(this.gameplay.getMode(), false);
+        this.hooks.onStartFlight(this.gameplay.getMode(), 'none');
       }
     });
 
@@ -298,17 +333,14 @@ export class UIManager {
       this.renderMenuDetail();
     });
 
-    // Bind HUD Quick Buttons
     document.getElementById('btn-hud-pause')!.addEventListener('click', () => {
       this.audio.playUiChime();
       this.openMenu(true);
     });
 
-    const camBtn = document.getElementById('btn-hud-cam')!;
-    camBtn.addEventListener('click', () => {
+    document.getElementById('btn-hud-cam')!.addEventListener('click', () => {
       this.audio.playUiChime();
       const next = this.cameraSys.cycleMode();
-      camBtn.textContent = `🎥 ${CAMERA_LABELS[next]}`;
       this.showToast(`Camera: ${CAMERA_LABELS[next]}`);
     });
 
@@ -322,7 +354,7 @@ export class UIManager {
       const cur = this.hooks.getActiveAtmosphere();
       const next = ATMOSPHERE_ORDER[(ATMOSPHERE_ORDER.indexOf(cur) + 1) % ATMOSPHERE_ORDER.length];
       this.hooks.onSelectAtmosphere(next);
-      this.showToast(`Atmosphere: ${ATMOSPHERE_PRESETS[next].name}`);
+      this.showToast(`Sky: ${ATMOSPHERE_PRESETS[next].name}`);
     });
 
     document.getElementById('btn-hud-mode')!.addEventListener('click', () => {
@@ -335,27 +367,11 @@ export class UIManager {
       this.input.triggerUiAction('resetAircraft');
       this.showToast('Aircraft stabilized in sky');
     });
-
-    document.getElementById('btn-hud-fs')!.addEventListener('click', () => {
-      this.audio.playUiChime();
-      this.toggleFullscreen();
-    });
-  }
-
-  private toggleFullscreen(): void {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
-      const scr = screen as unknown as { orientation?: { lock?: (o: string) => Promise<void> } };
-      scr.orientation?.lock?.('landscape').catch(() => {});
-    } else {
-      document.exitFullscreen?.().catch(() => {});
-    }
   }
 
   private bindTouchControls(): void {
-    // Multi-touch Virtual Flight Joystick (supports simultaneous throttle dragging!)
     let joyPointerId: number | null = null;
-    const maxRadius = 46;
+    const maxRadius = 44;
 
     const updateStick = (clientX: number, clientY: number) => {
       const rect = this.joyZoneEl.getBoundingClientRect();
@@ -370,7 +386,7 @@ export class UIManager {
       }
       this.joyKnobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
       this.input.touchStickX = dx / maxRadius;
-      this.input.touchStickY = dy / maxRadius; // Drag down (+dy) = pull stick back = pitch nose up!
+      this.input.touchStickY = dy / maxRadius;
       this.input.notifyTouchUsed();
     };
 
@@ -398,7 +414,6 @@ export class UIManager {
     this.joyZoneEl.addEventListener('pointerup', resetStick);
     this.joyZoneEl.addEventListener('pointercancel', resetStick);
 
-    // Touch Throttle Slider
     const thrTrack = document.getElementById('thr-track')!;
     let thrPointerId: number | null = null;
 
@@ -429,7 +444,6 @@ export class UIManager {
     thrTrack.addEventListener('pointerup', endThr);
     thrTrack.addEventListener('pointercancel', endThr);
 
-    // Touch Airbrake Hold Button
     this.airbrakeTouchBtn.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       this.input.touchAirbrake = true;
@@ -463,28 +477,29 @@ export class UIManager {
         .join('');
 
       this.menuDetailEl.innerHTML = `
-        <div class="panel-title">Flight Modes &amp; Aerodynamics</div>
-        <div class="panel-desc">Choose a peaceful experience—or take off manually from Dream Valley Runway 36 straight into the Cloud Canyon.</div>
+        <div class="panel-title">Flight Modes, Airport &amp; Landable Valley Highway</div>
+        <div class="panel-desc">Explore freely, land on Dream Valley Runway 36, or touch down anywhere along the 7.4 km yellow-lined Scenic Valley Highway &amp; River Bridge!</div>
         <div class="card-list">${modeCards}</div>
 
-        <div style="margin-top:12px;">
-          <button class="pill-btn" id="btn-runway-takeoff">🛫 Spawn on Airport Runway 36 for Takeoff</button>
+        <div style="margin-top:11px; display:flex; flex-wrap:wrap; gap:8px;">
+          <button class="pill-btn" id="btn-runway-takeoff">🛫 Takeoff from Airport Runway 36</button>
+          <button class="pill-btn" id="btn-highway-approach">🛣 Land on Scenic Valley Highway</button>
         </div>
 
-        <div style="margin-top:16px;" class="panel-title">Flight Physics Behavior</div>
+        <div style="margin-top:14px;" class="panel-title">Flight Physics</div>
         <div class="setting-row">
           <span>Flight Mode</span>
           <div>
-            <button class="pill-btn ${assist.flightMode === 'relaxed' ? 'active' : ''}" data-fmode="relaxed">Relaxed (Peaceful)</button>
-            <button class="pill-btn ${assist.flightMode === 'simulation' ? 'active' : ''}" data-fmode="simulation">Normal Simulation</button>
+            <button class="pill-btn ${assist.flightMode === 'relaxed' ? 'active' : ''}" data-fmode="relaxed">Relaxed</button>
+            <button class="pill-btn ${assist.flightMode === 'simulation' ? 'active' : ''}" data-fmode="simulation">Simulation</button>
           </div>
         </div>
         <div class="setting-row">
-          <span>Gentle Altitude Hold Assist (Relaxed)</span>
+          <span>Gentle Altitude Hold Assist</span>
           <button class="pill-btn ${assist.altitudeAssist ? 'active' : ''}" id="toggle-alt-assist">${assist.altitudeAssist ? 'ON' : 'OFF'}</button>
         </div>
         <div class="setting-row">
-          <span>Aerodynamic Stall Simulation</span>
+          <span>Stall Simulation</span>
           <button class="pill-btn ${assist.stallSimulation ? 'active' : ''}" id="toggle-stall">${assist.stallSimulation ? 'ON' : 'OFF'}</button>
         </div>
         <div class="setting-row">
@@ -499,7 +514,7 @@ export class UIManager {
           this.audio.unlockAndStart();
           this.audio.playUiChime(true);
           this.closeMenu();
-          this.hooks.onStartFlight(m, false);
+          this.hooks.onStartFlight(m, 'none');
         });
       });
 
@@ -507,7 +522,14 @@ export class UIManager {
         this.audio.unlockAndStart();
         this.audio.playUiChime(true);
         this.closeMenu();
-        this.hooks.onStartFlight('free_flight', true);
+        this.hooks.onStartFlight('free_flight', 'runway');
+      });
+
+      document.getElementById('btn-highway-approach')?.addEventListener('click', () => {
+        this.audio.unlockAndStart();
+        this.audio.playUiChime(true);
+        this.closeMenu();
+        this.hooks.onStartFlight('free_flight', 'highway');
       });
 
       this.menuDetailEl.querySelectorAll('[data-fmode]').forEach((el) => {
@@ -546,8 +568,8 @@ export class UIManager {
       }).join('');
 
       this.menuDetailEl.innerHTML = `
-        <div class="panel-title">Sky &amp; Atmospheric Lighting Presets</div>
-        <div class="panel-desc">Watch the live 3D sky, clouds, moon, and valley transform immediately behind this menu.</div>
+        <div class="panel-title">Ghibli Sunlight &amp; Sky Presets</div>
+        <div class="panel-desc">Switch live between crisp sunlit skies, golden dusk, and moonlit blue hour.</div>
         <div class="card-list">${cards}</div>
       `;
 
@@ -576,7 +598,7 @@ export class UIManager {
 
       this.menuDetailEl.innerHTML = `
         <div class="panel-title">Light Aircraft Hangar</div>
-        <div class="panel-desc">Each aircraft features animated ailerons, elevator, rudder, landing gear, navigation strobes &amp; custom flight dynamics.</div>
+        <div class="panel-desc">Detailed 3D aircraft with real-time shadows, moving control surfaces &amp; retractable landing gear.</div>
         <div class="card-list">${cards}</div>
       `;
 
@@ -600,15 +622,15 @@ export class UIManager {
           return `
             <div class="choice-card ${curGfx === id ? 'selected' : ''}" data-gfx="${id}">
               <h4>${g.label}</h4>
-              <p>Clouds: ${g.cloudClusterCount} towers • Max DPR: ${g.maxDpr}x • Shadows: ${g.shadowsEnabled ? g.shadowMapSize + 'px' : 'Off'}</p>
+              <p>Clouds: ${g.cloudClusterCount} towers • Max DPR: ${g.maxDpr}x • Shadows: ${g.shadowMapSize}px</p>
             </div>
           `;
         })
         .join('');
 
       this.menuDetailEl.innerHTML = `
-        <div class="panel-title">Graphics &amp; Mobile Optimization</div>
-        <div class="panel-desc">Current Live Frame Rate: <strong>${Math.round(this.hooks.getCurrentFps())} FPS</strong>. Volumetric cloud atmosphere stays active across all presets.</div>
+        <div class="panel-title">Graphics &amp; Performance</div>
+        <div class="panel-desc">Live Frame Rate: <strong>${Math.round(this.hooks.getCurrentFps())} FPS</strong>.</div>
         <div class="card-list">${cards}</div>
       `;
 
@@ -629,34 +651,32 @@ export class UIManager {
       const snap = this.input.getLiveGamepadSnapshot();
 
       this.menuDetailEl.innerHTML = `
-        <div class="panel-title">PS4 DualShock 4 &amp; Bluetooth Controller Settings</div>
+        <div class="panel-title">PS4 / Bluetooth Controller &amp; Vibration</div>
         <div class="panel-desc">
-          Supports DualShock 4, DualSense, Xbox &amp; Bluetooth gamepads via the Browser Gamepad API.
-          <em>Note: Android browsers may map Bluetooth axes differently across OS versions—use the live tester &amp; remapper below if needed.</em>
+          Dual-motor controller &amp; Android haptic vibration activates on runway/highway touchdown, ground roll, water skim &amp; terrain contact.
         </div>
 
         <div class="gp-tester-box">
-          <div style="font-size:12.5px; font-weight:600; color:${snap.connected ? '#6ee7b7' : '#fda4af'};" id="gp-live-status">
+          <div style="font-size:12px; font-weight:600; color:${snap.connected ? '#6ee7b7' : '#fda4af'};" id="gp-live-status">
             ${snap.connected ? `Connected: ${snap.profileLabel}` : 'No Gamepad Active — Press any controller button'}
           </div>
-          <div style="font-size:11px; color:var(--text-secondary); margin-top:2px;" id="gp-live-note">${snap.compatibilityNote}</div>
+          <div style="font-size:11px; color:var(--text-secondary); margin-top:2px;">${snap.compatibilityNote}</div>
           <div class="gp-sticks-row">
-            <div>
-              <div class="stick-viz"><div class="stick-dot" id="gp-dot-left"></div></div>
-              <div style="font-size:10px; text-align:center; margin-top:3px; color:var(--text-secondary);">Pitch / Roll</div>
-            </div>
-            <div>
-              <div class="stick-viz"><div class="stick-dot" id="gp-dot-right"></div></div>
-              <div style="font-size:10px; text-align:center; margin-top:3px; color:var(--text-secondary);">Yaw / Look</div>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:6px;">
-              <button class="pill-btn" id="btn-gp-calibrate">Calibrate Stick Center</button>
-              <button class="pill-btn" id="btn-gp-reset">Reset Default Mapping</button>
+            <div><div class="stick-viz"><div class="stick-dot" id="gp-dot-left"></div></div></div>
+            <div><div class="stick-viz"><div class="stick-dot" id="gp-dot-right"></div></div></div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px;">
+              <button class="pill-btn" id="btn-gp-vib-test">📳 Test Vibration</button>
+              <button class="pill-btn" id="btn-gp-calibrate">Calibrate Sticks</button>
+              <button class="pill-btn" id="btn-gp-reset">Reset Defaults</button>
             </div>
           </div>
           <div class="gp-buttons-grid" id="gp-buttons-grid"></div>
         </div>
 
+        <div class="setting-row">
+          <span>Touchdown &amp; Contact Vibration</span>
+          <button class="pill-btn ${s.vibrationEnabled ? 'active' : ''}" id="btn-vib-toggle">${s.vibrationEnabled ? 'ON' : 'OFF'}</button>
+        </div>
         <div class="setting-row">
           <span>Stick Sensitivity (${s.sensitivity.toFixed(2)}x)</span>
           <input type="range" id="rng-sens" min="0.4" max="1.8" step="0.05" value="${s.sensitivity}" />
@@ -670,20 +690,29 @@ export class UIManager {
           <button class="pill-btn ${s.invertPitch ? 'active' : ''}" id="btn-inv-pitch">${s.invertPitch ? 'Inverted' : 'Standard'}</button>
         </div>
 
-        <div style="margin-top:10px; font-size:12px; color:var(--accent-gold);">
-          ${this.remapWaitingLabel ? `Move stick or press button on controller for: <strong>${this.remapWaitingLabel}</strong>...` : 'Custom Button & Axis Mapping (Click to Remap):'}
+        <div style="margin-top:8px; font-size:11.5px; color:var(--accent-gold);">
+          ${this.remapWaitingLabel ? `Press button/axis on controller for: <strong>${this.remapWaitingLabel}</strong>...` : 'Custom Mapping (Tap to Remap):'}
         </div>
         <div class="setting-row"><span>Pitch Axis</span><button class="pill-btn" data-remap-axis="pitchAxis">Axis ${m.pitchAxis}</button></div>
         <div class="setting-row"><span>Roll Axis</span><button class="pill-btn" data-remap-axis="rollAxis">Axis ${m.rollAxis}</button></div>
         <div class="setting-row"><span>Yaw Axis</span><button class="pill-btn" data-remap-axis="yawAxis">Axis ${m.yawAxis}</button></div>
-        <div class="setting-row"><span>Increase Throttle (R2/RT)</span><button class="pill-btn" data-remap-btn="throttleUpBtn">Btn ${m.throttleUpBtn}</button></div>
-        <div class="setting-row"><span>Decrease Throttle (L2/LT)</span><button class="pill-btn" data-remap-btn="throttleDownBtn">Btn ${m.throttleDownBtn}</button></div>
-        <div class="setting-row"><span>Switch Camera (△/Y)</span><button class="pill-btn" data-remap-btn="cameraBtn">Btn ${m.cameraBtn}</button></div>
+        <div class="setting-row"><span>Throttle Up (R2/RT)</span><button class="pill-btn" data-remap-btn="throttleUpBtn">Btn ${m.throttleUpBtn}</button></div>
+        <div class="setting-row"><span>Throttle Down (L2/LT)</span><button class="pill-btn" data-remap-btn="throttleDownBtn">Btn ${m.throttleDownBtn}</button></div>
+        <div class="setting-row"><span>Camera (△/Y)</span><button class="pill-btn" data-remap-btn="cameraBtn">Btn ${m.cameraBtn}</button></div>
         <div class="setting-row"><span>Landing Gear (✕/A)</span><button class="pill-btn" data-remap-btn="gearBtn">Btn ${m.gearBtn}</button></div>
         <div class="setting-row"><span>Air Brakes (□/X)</span><button class="pill-btn" data-remap-btn="airbrakeBtn">Btn ${m.airbrakeBtn}</button></div>
-        <div class="setting-row"><span>Reset Aircraft (○/B)</span><button class="pill-btn" data-remap-btn="resetBtn">Btn ${m.resetBtn}</button></div>
+        <div class="setting-row"><span>Reset Plane (○/B)</span><button class="pill-btn" data-remap-btn="resetBtn">Btn ${m.resetBtn}</button></div>
       `;
 
+      document.getElementById('btn-gp-vib-test')?.addEventListener('click', () => {
+        this.input.triggerVibration(260, 0.85, 0.65, true);
+        this.showToast('Sent vibration pulse to controller / phone');
+      });
+      document.getElementById('btn-vib-toggle')?.addEventListener('click', () => {
+        s.vibrationEnabled = !s.vibrationEnabled;
+        this.input.saveSettings();
+        this.renderMenuDetail();
+      });
       document.getElementById('rng-sens')?.addEventListener('input', (e) => {
         s.sensitivity = parseFloat((e.target as HTMLInputElement).value);
         this.input.saveSettings();
@@ -699,11 +728,11 @@ export class UIManager {
       });
       document.getElementById('btn-gp-calibrate')?.addEventListener('click', () => {
         const ok = this.input.calibrateGamepadCenters();
-        this.showToast(ok ? 'Analog sticks calibrated!' : 'Connect a gamepad first to calibrate');
+        this.showToast(ok ? 'Analog sticks calibrated!' : 'Connect a gamepad first');
       });
       document.getElementById('btn-gp-reset')?.addEventListener('click', () => {
         this.input.resetControllerDefaults();
-        this.showToast('Controller mapping restored to PS4/Standard defaults');
+        this.showToast('Controller defaults restored');
         this.renderMenuDetail();
       });
 
@@ -716,7 +745,6 @@ export class UIManager {
             m[key] = idx;
             this.input.saveSettings();
             this.remapWaitingLabel = null;
-            this.showToast(`Mapped ${key} to Button ${idx}`);
             this.renderMenuDetail();
           });
         });
@@ -731,7 +759,6 @@ export class UIManager {
             m[key] = idx;
             this.input.saveSettings();
             this.remapWaitingLabel = null;
-            this.showToast(`Mapped ${key} to Axis ${idx}`);
             this.renderMenuDetail();
           });
         });
@@ -742,15 +769,15 @@ export class UIManager {
     if (this.activeTab === 'audio') {
       const a = this.audio.settings;
       this.menuDetailEl.innerHTML = `
-        <div class="panel-title">Peaceful Soundscape &amp; Ambient Music</div>
-        <div class="panel-desc">Procedural light-aircraft engine harmonics, silky high-altitude wind, and original generative ambient music.</div>
+        <div class="panel-title">Peaceful Audio &amp; Ambient Music</div>
+        <div class="panel-desc">Gentle aircraft engine hum, high-altitude wind, touchdown audio &amp; original generative music.</div>
 
         <div class="setting-row">
           <span>Master Audio</span>
           <button class="pill-btn ${a.masterEnabled ? 'active' : ''}" id="btn-aud-master">${a.masterEnabled ? 'Enabled' : 'Muted'}</button>
         </div>
         <div class="setting-row">
-          <span>Engine &amp; Propeller Volume (${Math.round(a.engineVolume * 100)}%)</span>
+          <span>Engine Volume (${Math.round(a.engineVolume * 100)}%)</span>
           <input type="range" id="rng-eng" min="0" max="1" step="0.02" value="${a.engineVolume}" />
         </div>
         <div class="setting-row">
@@ -758,7 +785,7 @@ export class UIManager {
           <input type="range" id="rng-amb" min="0" max="1" step="0.02" value="${a.ambientVolume}" />
         </div>
         <div class="setting-row">
-          <span>Dream Ambient Music (${Math.round(a.musicVolume * 100)}%)</span>
+          <span>Ambient Music (${Math.round(a.musicVolume * 100)}%)</span>
           <input type="range" id="rng-mus" min="0" max="1" step="0.02" value="${a.musicVolume}" />
         </div>
         <div class="setting-row">
@@ -803,20 +830,17 @@ export class UIManager {
   }
 
   public update(telemetry: FlightTelemetry, gpStatus: GameplayStatus, activeControlSource: string): void {
-    // 1. Update Cloud Fly-Through Atmospheric Veil smoothly!
     const veilOpacity = Math.min(0.84, telemetry.cloudDensity * 0.88);
     this.cloudVeilEl.style.opacity = veilOpacity.toFixed(3);
 
-    // 2. Update Scenic Vista Banner
     if (gpStatus.bannerTitle && !this.inMenu) {
       this.bannerEl.classList.remove('hidden');
       this.bannerTitleEl.textContent = gpStatus.bannerTitle;
-      this.bannerSubEl.textContent = gpStatus.bannerSubtitle || '';
+      this.bannerSubEl.textContent = gpStatus.bannerSubtitle ? `— ${gpStatus.bannerSubtitle}` : '';
     } else {
       this.bannerEl.classList.add('hidden');
     }
 
-    // 3. If Controller Settings tab is open, update live visualizer @ 60Hz!
     if (this.inMenu && this.activeTab === 'controller') {
       const snap = this.input.getLiveGamepadSnapshot();
       const statusEl = document.getElementById('gp-live-status');
@@ -831,85 +855,64 @@ export class UIManager {
         statusEl.style.color = snap.connected ? '#6ee7b7' : '#fda4af';
       }
       if (leftDot && snap.connected) {
-        const lx = (snap.axes[this.input.settings.mapping.rollAxis] ?? 0) * 28;
-        const ly = (snap.axes[this.input.settings.mapping.pitchAxis] ?? 0) * 28;
+        const lx = (snap.axes[this.input.settings.mapping.rollAxis] ?? 0) * 24;
+        const ly = (snap.axes[this.input.settings.mapping.pitchAxis] ?? 0) * 24;
         leftDot.style.transform = `translate(calc(-50% + ${lx}px), calc(-50% + ${ly}px))`;
       }
       if (rightDot && snap.connected) {
-        const rx = (snap.axes[this.input.settings.mapping.yawAxis] ?? 0) * 28;
-        const ry = (snap.axes[3] ?? 0) * 28;
+        const rx = (snap.axes[this.input.settings.mapping.yawAxis] ?? 0) * 24;
+        const ry = (snap.axes[3] ?? 0) * 24;
         rightDot.style.transform = `translate(calc(-50% + ${rx}px), calc(-50% + ${ry}px))`;
       }
       if (btnGrid) {
-        if (!snap.connected) {
-          btnGrid.innerHTML = '';
-        } else {
-          btnGrid.innerHTML = snap.buttons
-            .map(
-              (b, i) =>
-                `<span class="gp-btn-chip ${b.pressed ? 'pressed' : ''}">B${i}${b.value > 0.05 ? ` (${Math.round(b.value * 100)}%)` : ''}</span>`
-            )
-            .join('');
-        }
+        btnGrid.innerHTML = snap.connected
+          ? snap.buttons
+              .map(
+                (b, i) =>
+                  `<span class="gp-btn-chip ${b.pressed ? 'pressed' : ''}">B${i}${b.value > 0.05 ? ` (${Math.round(b.value * 100)}%)` : ''}</span>`
+              )
+              .join('')
+          : '';
       }
     }
 
     if (this.inMenu) return;
 
-    // 4. Update HUD Telemetry & Artificial Horizon
+    // Update strictly 1-line minimal top HUD strip!
     const spdKts = Math.round(telemetry.airspeedKts);
     const altFt = Math.round(telemetry.altitudeFt);
     const hdg = Math.round(telemetry.headingDeg) || 360;
-    const vsi = Math.round(telemetry.verticalSpeedFpm / 10) * 10;
     const thrPct = Math.round(telemetry.throttle * 100);
-
-    this.spdValEl.textContent = `${spdKts} kts`;
-    this.altValEl.textContent = `${altFt.toLocaleString()} ft`;
-    this.hdgValEl.textContent = `${String(hdg).padStart(3, '0')}° ${this.cardinalFromHeading(hdg)}`;
-    this.vsiValEl.textContent = `${vsi >= 0 ? '+' : ''}${vsi} fpm`;
-    this.thrValEl.textContent = `THR ${thrPct}%`;
-
-    const assist = this.physics.getAssistOptions();
-    this.modeBadgeEl.textContent = telemetry.stalling
-      ? 'STALL'
-      : assist.flightMode === 'relaxed'
-      ? 'Relaxed'
-      : 'Sim';
-    this.modeBadgeEl.className = `mini-badge ${telemetry.stalling ? 'warn' : ''}`;
-
-    this.gearBadgeEl.textContent = telemetry.gearDown ? 'GEAR DN' : 'GEAR UP';
-    const hudGearBtn = document.getElementById('btn-hud-gear');
-    if (hudGearBtn) hudGearBtn.textContent = `🛞 Gear: ${telemetry.gearDown ? 'DN' : 'UP'}`;
-
     const gpConnected = this.input.isGamepadConnected();
-    this.ctrlBadgeEl.textContent = gpConnected
-      ? '🎮 Gamepad'
-      : activeControlSource === 'touch'
-      ? '📱 Touch'
-      : '⌨ Keys';
-    this.ctrlBadgeEl.className = `mini-badge ${gpConnected ? 'good' : ''}`;
 
-    if (gpStatus.mode === 'scenic_journey' || gpStatus.mode === 'landing_challenge') {
-      this.wpBadgeEl.style.display = 'inline-block';
-      const distKm =
+    let extraTag = '';
+    if (telemetry.stalling) {
+      extraTag = ' · <span class="hud-warn-tag">STALL</span>';
+    } else if (gpStatus.mode === 'scenic_journey') {
+      const dStr =
         gpStatus.waypointDistanceM >= 1000
-          ? `${(gpStatus.waypointDistanceM / 1000).toFixed(1)} km`
-          : `${gpStatus.waypointDistanceM} m`;
-      this.wpBadgeEl.textContent =
-        gpStatus.mode === 'scenic_journey'
-          ? `WP ${gpStatus.waypointIndex}/${gpStatus.waypointTotal}: ${distKm}`
-          : `RWY 36: ${distKm}`;
-    } else {
-      this.wpBadgeEl.style.display = 'none';
+          ? `${(gpStatus.waypointDistanceM / 1000).toFixed(1)}km`
+          : `${gpStatus.waypointDistanceM}m`;
+      extraTag = ` · WP ${gpStatus.waypointIndex}/${gpStatus.waypointTotal} (${dStr})`;
+    } else if (telemetry.onGround) {
+      extraTag = telemetry.surfaceType === 'highway' ? ' · HIGHWAY' : ' · RUNWAY';
     }
 
-    // Artificial Horizon line pitch & roll
-    const pitchPx = Math.max(-42, Math.min(42, telemetry.pitchDeg * 1.4));
+    const txtEl = document.getElementById('hud-txt-line');
+    if (txtEl) {
+      txtEl.innerHTML = `${gpConnected ? '🎮 ' : ''}${spdKts} KT <span class="hud-sep">·</span> ${altFt.toLocaleString()} FT <span class="hud-sep">·</span> ${String(hdg).padStart(3, '0')}° ${this.cardinalFromHeading(hdg)} <span class="hud-sep">·</span> THR ${thrPct}%${extraTag}`;
+    }
+
+    const hudGearBtn = document.getElementById('btn-hud-gear');
+    if (hudGearBtn) hudGearBtn.textContent = `🛞 ${telemetry.gearDown ? 'DN' : 'UP'}`;
+
+    const pitchPx = Math.max(-28, Math.min(28, telemetry.pitchDeg * 1.1));
     this.horizonLineEl.style.transform = `translateY(${pitchPx}px) rotate(${-telemetry.rollDeg}deg)`;
 
-    // Show touch controls automatically on touch devices unless user is actively flying with a physical gamepad
     const showTouch =
-      this.input.isTouchDevice() && !(gpConnected && activeControlSource === 'gamepad') && this.hudMode !== 'immersive';
+      this.input.isTouchDevice() &&
+      !(gpConnected && activeControlSource === 'gamepad') &&
+      this.hudMode !== 'immersive';
     this.touchWrapEl.classList.toggle('hidden', !showTouch);
 
     if (showTouch) {

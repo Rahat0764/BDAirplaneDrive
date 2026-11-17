@@ -196,18 +196,22 @@ void main() {
   float halfLambert = sunDot * 0.5 + 0.5;
   float heightLit = smoothstep(0.0, 0.95, vCloudMeta.x);
 
-  // "Powder" dark-crevice / bright-crown scattering characteristic of thick cumulus
-  float powder = 1.0 - exp(-effectiveDensity * 2.4);
-  float lightEnergy = clamp(
-    halfLambert * 0.68 + heightLit * 0.36 + (fDetail - 0.48) * 0.28,
+  // "Powder" dark-crevice / bright-crown scattering + clean Ghibli sunlit tonal clarity!
+  float powder = 1.0 - exp(-effectiveDensity * 2.5);
+  float rawEnergy = clamp(
+    halfLambert * 0.68 + heightLit * 0.36 + (fDetail - 0.48) * 0.30,
     0.0,
     1.15
   );
-  lightEnergy = mix(lightEnergy * 0.72, lightEnergy, powder);
+  float smoothEnergy = mix(rawEnergy * 0.74, rawEnergy, powder);
 
-  // Multi-stop realistic cloud palette: cool blue-slate shadow -> soft lavender/sky mid -> crisp warm sunlit crown
-  vec3 col = mix(uCloudShadow, uCloudMid, smoothstep(0.08, 0.52, lightEnergy));
-  col = mix(col, uCloudBright, smoothstep(0.46, 0.92, lightEnergy));
+  // Subtle clean Ghibli-inspired 3-tier tonal crispness blended seamlessly with realistic volumetric gradient
+  float ghibliBand = smoothstep(0.24, 0.34, smoothEnergy) * 0.46 + smoothstep(0.56, 0.68, smoothEnergy) * 0.54;
+  float lightEnergy = mix(smoothEnergy, ghibliBand, 0.36);
+
+  // Multi-stop luminous cloud palette: clean cerulean shadow -> soft sky-periwinkle mid -> warm sunlit ivory crown
+  vec3 col = mix(uCloudShadow, uCloudMid, smoothstep(0.08, 0.50, lightEnergy));
+  col = mix(col, uCloudBright, smoothstep(0.45, 0.88, lightEnergy));
 
   // Silver lining forward scattering when looking near the sun/moon through cloud edges!
   float viewSunCos = dot(-V, uSunDir);

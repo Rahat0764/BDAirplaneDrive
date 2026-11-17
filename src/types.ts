@@ -19,7 +19,7 @@ export type GameplayModeId =
 
 export type CameraModeId = 'chase' | 'cockpit' | 'cinematic' | 'freelook';
 
-export type HudModeId = 'full' | 'minimal' | 'immersive';
+export type HudModeId = 'minimal' | 'immersive';
 
 export type AircraftVariantId = 'cloudrunner' | 'skyhawk' | 'albatross';
 
@@ -47,8 +47,8 @@ export interface AtmospherePreset {
   sunAzimuthDeg: number;
   moonElevationDeg: number;
   moonAzimuthDeg: number;
-  moonVisibility: number; // 0..1
-  starVisibility: number; // 0..1
+  moonVisibility: number;
+  starVisibility: number;
   skyZenith: THREE.Color;
   skyUpper: THREE.Color;
   skyHorizon: THREE.Color;
@@ -65,7 +65,7 @@ export interface AtmospherePreset {
   fogColor: THREE.Color;
   fogDensity: number;
   exposure: number;
-  nightLights: number; // 0..1 for runway & settlement lights
+  nightLights: number;
 }
 
 export interface GraphicsConfig {
@@ -109,6 +109,7 @@ export interface ControllerSettings {
   deadzone: number;
   sensitivity: number;
   invertPitch: boolean;
+  vibrationEnabled: boolean;
   axisCenterOffsets: [number, number, number, number];
   mapping: ControllerMapping;
 }
@@ -122,11 +123,11 @@ export interface AudioSettings {
 }
 
 export interface ControlInputs {
-  pitch: number; // -1..1 (positive = nose up)
-  roll: number; // -1..1 (positive = bank right)
-  yaw: number; // -1..1 (positive = yaw right)
-  throttleDelta: number; // -1..1 continuous change
-  throttleDirect: number | null; // 0..1 when slider dragged
+  pitch: number;
+  roll: number;
+  yaw: number;
+  throttleDelta: number;
+  throttleDirect: number | null;
   airbrake: boolean;
   toggleGear: boolean;
   switchCamera: boolean;
@@ -135,6 +136,12 @@ export interface ControlInputs {
   lookDeltaX: number;
   lookDeltaY: number;
   activeSource: 'keyboard' | 'gamepad' | 'touch';
+}
+
+export interface HapticFeedbackEvents {
+  touchdownIntensity: number; // >0 on exact frame wheels touch runway/road/ground
+  scrapeIntensity: number;    // >0 when skimming water, grazing terrain, or hard impact
+  groundRollSpeedNorm: number;// 0..1 continuous tire roll rumble on ground
 }
 
 export interface FlightTelemetry {
@@ -152,18 +159,20 @@ export interface FlightTelemetry {
   headingDeg: number;
   pitchDeg: number;
   rollDeg: number;
-  throttle: number; // 0..1
-  rpmNormalized: number; // 0..1
+  throttle: number;
+  rpmNormalized: number;
   gearDown: boolean;
-  gearDeployAnim: number; // 0..1
+  gearDeployAnim: number;
   airbrakeActive: boolean;
-  airbrakeAnim: number; // 0..1
+  airbrakeAnim: number;
   onGround: boolean;
+  surfaceType: 'air' | 'runway' | 'highway' | 'terrain' | 'water';
   stalling: boolean;
   crashed: boolean;
-  cloudDensity: number; // 0..1 inside cloud
+  cloudDensity: number;
   gForce: number;
   aileronInput: number;
   elevatorInput: number;
   rudderInput: number;
+  haptics: HapticFeedbackEvents;
 }

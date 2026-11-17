@@ -1,19 +1,19 @@
-import { ControlInputs, ControllerMapping, ControllerSettings } from '../types';
+import { ControlInputs, ControllerMapping, ControllerSettings, HapticFeedbackEvents } from '../types';
 import { clamp } from '../utils/noise';
 
-const STORAGE_KEY = 'dream_flight_controller_v1';
+const STORAGE_KEY = 'dream_flight_controller_v2';
 
 export const DEFAULT_CONTROLLER_MAPPING: ControllerMapping = {
-  pitchAxis: 1,       // Left Stick Vertical
-  rollAxis: 0,        // Left Stick Horizontal
-  yawAxis: 2,         // Right Stick Horizontal (Standard mapping)
-  throttleUpBtn: 7,   // R2 / RT
-  throttleDownBtn: 6, // L2 / LT
-  cameraBtn: 3,       // Triangle / Y
-  gearBtn: 0,         // Cross / A
-  airbrakeBtn: 2,     // Square / X
-  resetBtn: 1,        // Circle / B
-  pauseBtn: 9,        // Options / Start
+  pitchAxis: 1,
+  rollAxis: 0,
+  yawAxis: 2,
+  throttleUpBtn: 7,
+  throttleDownBtn: 6,
+  cameraBtn: 3,
+  gearBtn: 0,
+  airbrakeBtn: 2,
+  resetBtn: 1,
+  pauseBtn: 9,
 };
 
 export interface GamepadSnapshot {
@@ -21,16 +21,36 @@ export interface GamepadSnapshot {
   id: string;
   profileLabel: string;
   standardMapping: boolean;
+  vibrationSupported: boolean;
   axes: number[];
   buttons: Array<{ pressed: boolean; value: number }>;
   compatibilityNote: string;
 }
+
+type ExtendedGamepad = Omit<Gamepad, 'vibrationActuator'> & {
+  vibrationActuator?: {
+    type?: string;
+    playEffect?: (
+      type: string,
+      params: {
+        startDelay?: number;
+        duration: number;
+        weakMagnitude?: number;
+        strongMagnitude?: number;
+      }
+    ) => Promise<unknown>;
+  } | null;
+  hapticActuators?: Array<{
+    pulse?: (value: number, duration: number) => Promise<unknown>;
+  }>;
+};
 
 export class InputManager {
   public settings: ControllerSettings = {
     deadzone: 0.12,
     sensitivity: 1.0,
     invertPitch: false,
+    vibrationEnabled: true,
     axisCenterOffsets: [0, 0, 0, 0],
     mapping: { ...DEFAULT_CONTROLLER_MAPPING },
   };
@@ -44,26 +64,26 @@ export class InputManager {
     cycleHud: false,
   };
 
-  // Touch inputs populated by UIManager virtual stick & sliders
   public touchStickX = 0;
   public touchStickY = 0;
   public touchThrottleDirect: number | null = null;
   public touchAirbrake = false;
   private touchActive = false;
 
-  // Mouse / touch look delta
   private lookAccumX = 0;
   private lookAccumY = 0;
   private pointerDraggingLook = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
 
-  // Gamepad tracking
   private activeGamepadIndex: number | null = null;
   private prevBtnPressed: boolean[] = [];
   private activeSource: 'keyboard' | 'gamepad' | 'touch' = 'keyboard';
   private onConnectionChange?: (connected: boolean, label: string) => void;
   private remapCaptureCallback: ((kind: 'button' | 'axis', index: number) => void) | null = null;
+
+  private rollRumbleTimer = 0;
+  private impulseLockUntil = 0;
 
   constructor(canvas: HTMLCanvasElement, onGamepadNotice?: (connected: boolean, label: string) => void) {
     this.onConnectionChange = onGamepadNotice;
@@ -85,7 +105,7 @@ export class InputManager {
         };
       }
     } catch {
-      // Ignore storage access errors in private browsing
+      // Ignore
     }
   }
 
@@ -102,10 +122,83 @@ export class InputManager {
       deadzone: 0.12,
       sensitivity: 1.0,
       invertPitch: false,
+      vibrationEnabled: true,
       axisCenterOffsets: [0, 0, 0, 0],
       mapping: { ...DEFAULT_CONTROLLER_MAPPING },
     };
     this.saveSettings();
+  }
+
+  /**
+   * Triggers DualShock 4 / DualSense / Xbox controller dual-rumble OR Android phone haptic pulse!
+   */
+  public triggerVibration(durationMs: number, strongMag: number, weakMag: number, allowPhoneFallback = true): void {
+    if (!this.settings.vibrationEnabled) return;
+
+    const gp = this.findActiveGamepad() as ExtendedGamepad | null;
+    let handledByGamepad = false;
+
+    if (gp) {
+      if (gp.vibrationActuator && typeof gp.vibrationActuator.playEffect === 'function') {
+        handledByGamepad = true;
+        gp.vibrationActuator
+          .playEffect('dual-rumble', {
+            startDelay: 0,
+            duration: Math.round(durationMs),
+            strongMagnitude: clamp(strongMag, 0, 1),
+            weakMagnitude: clamp(weakMag, 0, 1),
+          })
+          .catch(() => {});
+      } else if (gp.hapticActuators && gp.hapticActuators.length > 0 && typeof gp.hapticActuators[0]?.pulse === 'function') {
+        handledByGamepad = true;
+        gp.hapticActuators[0].pulse(clamp(Math.max(strongMag, weakMag), 0, 1), durationMs).catch(() => {});
+      }
+    }
+
+    // Android phone tactile vibration fallback when touching down or scraping!
+    if (!handledByGamepad && allowPhoneFallback && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate(Math.min(220, Math.max(18, Math.round(durationMs * Math.max(strongMag, 0.35)))));
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  public processFlightHaptics(dt: number, haptics: HapticFeedbackEvents, stalling: boolean): void {
+    if (!this.settings.vibrationEnabled) return;
+    const now = performance.now();
+
+    // 1. Hard Scrape / Water Skim / Crash Jolt (Highest priority)
+    if (haptics.scrapeIntensity > 0.05) {
+      const mag = clamp(haptics.scrapeIntensity, 0.4, 1.0);
+      this.impulseLockUntil = now + 260;
+      this.triggerVibration(260, mag, mag * 0.85, true);
+      return;
+    }
+
+    // 2. Wheel Touchdown Thump on Runway, Highway, or Valley Meadow!
+    if (haptics.touchdownIntensity > 0.05) {
+      const mag = clamp(haptics.touchdownIntensity, 0.3, 1.0);
+      this.impulseLockUntil = now + 185;
+      this.triggerVibration(185, mag * 0.9, mag * 0.65, true);
+      return;
+    }
+
+    if (now < this.impulseLockUntil) return;
+
+    // 3. Continuous subtle Ground Roll tire rumble or Stall Stick Shaker (Gamepad motor)
+    this.rollRumbleTimer -= dt;
+    if (this.rollRumbleTimer <= 0) {
+      if (haptics.groundRollSpeedNorm > 0.08) {
+        this.rollRumbleTimer = 0.09;
+        const r = haptics.groundRollSpeedNorm;
+        this.triggerVibration(95, r * 0.16, r * 0.36, false);
+      } else if (stalling) {
+        this.rollRumbleTimer = 0.14;
+        this.triggerVibration(110, 0.12, 0.28, false);
+      }
+    }
   }
 
   private bindKeyboard(): void {
@@ -163,6 +256,8 @@ export class InputManager {
       const label = this.identifyControllerProfile(e.gamepad).profileLabel;
       this.activeSource = 'gamepad';
       this.onConnectionChange?.(true, label);
+      // Gentle welcome pulse on controller connect
+      this.triggerVibration(120, 0.35, 0.5, false);
     });
 
     window.addEventListener('gamepaddisconnected', (e) => {
@@ -193,7 +288,7 @@ export class InputManager {
 
     const compatibilityNote = isStandard
       ? 'Standard W3C Gamepad mapping detected.'
-      : 'Non-standard OS/Android browser mapping detected — use Controller Test & Custom Mapping below if any axis/button differs on your device.';
+      : 'Non-standard OS/Android browser mapping detected — use Custom Mapping below if any axis/button differs.';
 
     return { profileLabel, compatibilityNote };
   }
@@ -217,26 +312,34 @@ export class InputManager {
   }
 
   public getLiveGamepadSnapshot(): GamepadSnapshot {
-    const gp = this.findActiveGamepad();
+    const gp = this.findActiveGamepad() as ExtendedGamepad | null;
     if (!gp) {
       return {
         connected: false,
         id: 'No controller detected',
         profileLabel: 'Not Connected',
         standardMapping: false,
+        vibrationSupported: typeof navigator.vibrate === 'function',
         axes: [],
         buttons: [],
         compatibilityNote:
-          'Press any button on a paired PS4 DualShock 4 or Bluetooth controller to wake it in your browser.',
+          'Press any button on a paired PS4 DualShock 4 or Bluetooth controller to wake it.',
       };
     }
 
-    const info = this.identifyControllerProfile(gp);
+    const info = this.identifyControllerProfile(gp as unknown as Gamepad);
+    const vibSupported = Boolean(
+      gp.vibrationActuator?.playEffect ||
+        (gp.hapticActuators && gp.hapticActuators.length > 0) ||
+        typeof navigator.vibrate === 'function'
+    );
+
     return {
       connected: true,
       id: gp.id,
       profileLabel: info.profileLabel,
       standardMapping: gp.mapping === 'standard',
+      vibrationSupported: vibSupported,
       axes: gp.axes.map((a) => Number(a.toFixed(3))),
       buttons: gp.buttons.map((b) => ({ pressed: b.pressed, value: Number(b.value.toFixed(2)) })),
       compatibilityNote: info.compatibilityNote,
@@ -302,7 +405,6 @@ export class InputManager {
     let throttleDirect: number | null = null;
     let airbrake = false;
 
-    // 1. Keyboard inputs
     if (this.keys.has('KeyW') || this.keys.has('ArrowDown')) pitch -= 1;
     if (this.keys.has('KeyS') || this.keys.has('ArrowUp')) pitch += 1;
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) roll -= 1;
@@ -319,7 +421,6 @@ export class InputManager {
       airbrake = true;
     }
 
-    // 2. Touch virtual joystick & throttle slider
     if (Math.abs(this.touchStickX) > 0.01 || Math.abs(this.touchStickY) > 0.01) {
       roll += this.touchStickX * this.settings.sensitivity;
       pitch += this.touchStickY * this.settings.sensitivity;
@@ -333,12 +434,10 @@ export class InputManager {
       airbrake = true;
     }
 
-    // 3. PS4 DualShock 4 / DualSense / Bluetooth Gamepad API
     const gp = this.findActiveGamepad();
     if (gp) {
       const m = this.settings.mapping;
 
-      // Capture mode for custom button/axis mapping UI
       if (this.remapCaptureCallback) {
         for (let b = 0; b < gp.buttons.length; b++) {
           if (gp.buttons[b].pressed && !this.prevBtnPressed[b]) {
@@ -367,8 +466,10 @@ export class InputManager {
         this.settings.axisCenterOffsets[m.yawAxis] || 0
       );
 
-      // Right stick vertical can also pan free-look / cockpit pitch when axis 3 exists
-      const rightStickY = gp.axes.length > 3 ? this.processAxis(gp.axes[3] ?? 0, this.settings.axisCenterOffsets[3] || 0) : 0;
+      const rightStickY =
+        gp.axes.length > 3
+          ? this.processAxis(gp.axes[3] ?? 0, this.settings.axisCenterOffsets[3] || 0)
+          : 0;
       if (Math.abs(rightStickY) > 0.05) {
         this.lookAccumY += rightStickY * 0.022;
       }
@@ -376,12 +477,18 @@ export class InputManager {
       const r2Val = gp.buttons[m.throttleUpBtn]?.value ?? 0;
       const l2Val = gp.buttons[m.throttleDownBtn]?.value ?? 0;
 
-      if (Math.abs(gpRoll) > 0.01 || Math.abs(gpPitch) > 0.01 || Math.abs(gpYaw) > 0.01 || r2Val > 0.05 || l2Val > 0.05) {
+      if (
+        Math.abs(gpRoll) > 0.01 ||
+        Math.abs(gpPitch) > 0.01 ||
+        Math.abs(gpYaw) > 0.01 ||
+        r2Val > 0.05 ||
+        l2Val > 0.05
+      ) {
         this.activeSource = 'gamepad';
       }
 
       roll += gpRoll;
-      pitch += gpPitch; // Pulling stick back (+1 on standard Y axis) pitches nose up!
+      pitch += gpPitch;
       yaw += gpYaw;
       throttleDelta += (r2Val - l2Val) * 1.15;
 
@@ -389,7 +496,6 @@ export class InputManager {
         airbrake = true;
       }
 
-      // Edge-triggered button actions
       const checkJustPressed = (btnIdx: number): boolean => {
         const now = Boolean(gp.buttons[btnIdx]?.pressed);
         const was = Boolean(this.prevBtnPressed[btnIdx]);
@@ -426,7 +532,6 @@ export class InputManager {
       activeSource: this.activeSource,
     };
 
-    // Reset one-frame deltas
     this.oneShotActions.toggleGear = false;
     this.oneShotActions.switchCamera = false;
     this.oneShotActions.resetAircraft = false;

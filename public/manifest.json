@@ -1,0 +1,9 @@
+{
+  "name": "DREAM FLIGHT — 3D Aviation",
+  "short_name": "Dream Flight",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0a1f44",
+  "theme_color": "#0d254c"
+}

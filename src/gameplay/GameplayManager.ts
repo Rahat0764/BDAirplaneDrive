@@ -155,23 +155,23 @@ export class GameplayManager {
     mode: GameplayModeId,
     physics: FlightPhysics,
     onChime?: () => void,
-    startOnRunway = false
+    specialSpawn: 'none' | 'runway' | 'highway' = 'none'
   ): void {
     this.mode = mode;
     this.landingEvaluated = false;
     this.landingSummary = null;
-    this.prevOnGround = startOnRunway;
+    this.prevOnGround = specialSpawn === 'runway';
     this.activeWpIndex = 0;
 
     this.ringGroup.visible = mode === 'scenic_journey';
-    this.approachRingsGroup.visible = mode === 'landing_challenge';
+    this.approachRingsGroup.visible = mode === 'landing_challenge' && specialSpawn !== 'highway';
 
     let spawn: SpawnPreset;
 
-    if (startOnRunway) {
+    if (specialSpawn === 'runway') {
       spawn = {
         position: new THREE.Vector3(0, 29.18, 2020),
-        headingDeg: 0, // Facing straight North down Runway 36 into the Grand Cloud Canyon!
+        headingDeg: 0,
         pitchDeg: 0,
         airspeedKts: 0,
         throttle: 0.0,
@@ -179,6 +179,18 @@ export class GameplayManager {
         onGround: true,
       };
       this.showBanner('Runway 36 Cleared for Takeoff', 'Advance throttle smoothly and lift off into the Cloud Canyon');
+    } else if (specialSpawn === 'highway') {
+      // Positioned on scenic approach aligned with the straightest valley stretch of the Landable Highway!
+      spawn = {
+        position: new THREE.Vector3(368, 92, 980),
+        headingDeg: 356,
+        pitchDeg: -2.2,
+        airspeedKts: 70,
+        throttle: 0.4,
+        gearDown: true,
+        onGround: false,
+      };
+      this.showBanner('Scenic Valley Highway Approach', 'Align with the yellow highway centerline below and touch down gently!');
     } else if (mode === 'scenic_journey') {
       spawn = {
         position: new THREE.Vector3(0, 545, 560),
@@ -285,30 +297,31 @@ export class GameplayManager {
       }
     }
 
+    // Show gentle touchdown feedback whenever landing smoothly on Runway OR Scenic Highway in any mode!
+    if (telemetry.onGround && !this.prevOnGround) {
+      const sinkFpm = Math.round(Math.abs(this.lastAirborneVsFpm));
+      if (telemetry.surfaceType === 'highway') {
+        const msg = sinkFpm < 240 ? 'Butter-Smooth Highway Touchdown!' : 'Landed on Scenic Valley Highway!';
+        this.showBanner(msg, `Vertical rate: -${sinkFpm} fpm • Ready to roll or take off again`, 5.5);
+        onWaypointReached?.();
+      } else if (telemetry.surfaceType === 'runway') {
+        this.landingEvaluated = true;
+        const dx = Math.abs(telemetry.position.x - airport.runwayCenter.x);
+        const rating =
+          sinkFpm < 170 && dx < 6
+            ? 'Butter-Smooth Greased Landing!'
+            : sinkFpm < 350
+            ? 'Smooth Runway Touchdown!'
+            : 'Safe Runway Arrival';
+        this.landingSummary = `${rating} (-${sinkFpm} fpm)`;
+        this.showBanner(rating, `Touchdown rate: -${sinkFpm} fpm`, 6.0);
+        onWaypointReached?.();
+      }
+    }
+
     if (this.mode === 'landing_challenge') {
       wpName = 'Runway 36 Threshold';
       wpDist = telemetry.position.distanceTo(airport.thresholdSouth);
-
-      if (!this.landingEvaluated && telemetry.onGround && !this.prevOnGround) {
-        const dx = Math.abs(telemetry.position.x - airport.runwayCenter.x);
-        const dz = Math.abs(telemetry.position.z - airport.runwayCenter.z);
-        const onAsphalt = dx <= airport.runwayWidth * 0.65 && dz <= airport.runwayLength * 0.52;
-
-        if (onAsphalt) {
-          this.landingEvaluated = true;
-          const sinkFpm = Math.round(Math.abs(this.lastAirborneVsFpm));
-          const centerOffset = dx.toFixed(1);
-          const rating =
-            sinkFpm < 160 && dx < 5
-              ? 'Butter-Smooth Greased Landing!'
-              : sinkFpm < 340 && dx < 11
-              ? 'Smooth Scenic Touchdown!'
-              : 'Safe Runway Arrival';
-          this.landingSummary = `${rating} (${sinkFpm} fpm • ${centerOffset}m off centerline)`;
-          this.showBanner(rating, `Touchdown rate: -${sinkFpm} fpm • Centerline offset: ${centerOffset}m`, 8.0);
-          onWaypointReached?.();
-        }
-      }
     }
 
     this.prevOnGround = telemetry.onGround;
