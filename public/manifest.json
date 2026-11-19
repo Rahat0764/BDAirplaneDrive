@@ -2,8 +2,10 @@
   "name": "DREAM FLIGHT — 3D Aviation",
   "short_name": "Dream Flight",
   "start_url": "/",
+  "scope": "/",
   "display": "fullscreen",
   "orientation": "landscape",
-  "background_color": "#0a1f44",
-  "theme_color": "#0d254c"
+  "background_color": "#091c3d",
+  "theme_color": "#0d254c",
+  "description": "Peaceful Ghibli-sunlit 3D aviation with dynamic real-time sky, open sea physics, and offline local play."
 }

@@ -5,7 +5,30 @@ export type AtmospherePresetId =
   | 'morning'
   | 'golden_hour'
   | 'sunset'
-  | 'blue_hour';
+  | 'blue_hour'
+  | 'midnight';
+
+export type WeatherPresetId =
+  | 'clear'
+  | 'ghibli_cumulus'
+  | 'misty_valley'
+  | 'rain_shower'
+  | 'golden_breeze';
+
+export interface WeatherConfig {
+  id: WeatherPresetId;
+  name: string;
+  icon: string;
+  subtitle: string;
+  cloudDensityMult: number;
+  cloudDarken: number;
+  fogMultiplier: number;
+  rainIntensity: number;
+  petalIntensity: number;
+  windStrength: number;
+  turbulenceBoost: number;
+  sunDim: number;
+}
 
 export type GraphicsPresetId = 'low' | 'medium' | 'high' | 'ultra';
 
@@ -99,10 +122,14 @@ export interface ControllerMapping {
   throttleUpBtn: number;
   throttleDownBtn: number;
   cameraBtn: number;
+  weatherBtn: number;
+  timeBtn: number;
   gearBtn: number;
   airbrakeBtn: number;
   resetBtn: number;
   pauseBtn: number;
+  hudBtn: number;
+  zoomBtn: number;
 }
 
 export interface ControllerSettings {
@@ -122,6 +149,17 @@ export interface AudioSettings {
   musicMuted: boolean;
 }
 
+export interface MenuNavActions {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+  confirm: boolean;
+  back: boolean;
+  prevTab: boolean;
+  nextTab: boolean;
+}
+
 export interface ControlInputs {
   pitch: number;
   roll: number;
@@ -131,11 +169,16 @@ export interface ControlInputs {
   airbrake: boolean;
   toggleGear: boolean;
   switchCamera: boolean;
+  cycleWeather: boolean;
+  cycleTime: boolean;
+  cycleAircraft: boolean;
+  toggleZoom: boolean;
   resetAircraft: boolean;
   togglePause: boolean;
   lookDeltaX: number;
   lookDeltaY: number;
   activeSource: 'keyboard' | 'gamepad' | 'touch';
+  menuNav: MenuNavActions;
 }
 
 export interface HapticFeedbackEvents {
@@ -170,6 +213,7 @@ export interface FlightTelemetry {
   stalling: boolean;
   crashed: boolean;
   cloudDensity: number;
+  waterSkimIntensity: number;
   gForce: number;
   aileronInput: number;
   elevatorInput: number;

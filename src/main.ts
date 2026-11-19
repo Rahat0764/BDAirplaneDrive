@@ -1,36 +1,56 @@
 import './style.css';
 import * as THREE from 'three';
-import { AircraftModel } from './aircraft/AircraftModel';
+import { AIRCRAFT_ORDER, AIRCRAFT_SPECS, AircraftModel } from './aircraft/AircraftModel';
 import { AudioSystem } from './audio/AudioSystem';
 import { CAMERA_LABELS, CameraSystem } from './camera/CameraSystem';
 import { InputManager } from './controls/InputManager';
 import { FlightPhysics } from './flight/FlightPhysics';
 import { GameplayManager } from './gameplay/GameplayManager';
+import { OfflineInstaller } from './offline/OfflineInstaller';
 import {
   AircraftVariantId,
+  AtmospherePreset,
   AtmospherePresetId,
   GameplayModeId,
   GraphicsPresetId,
+  WeatherPresetId,
 } from './types';
+import { IconName } from './ui/Icons';
 import { UIManager } from './ui/UIManager';
 import {
+  applyWeatherToAtmosphere,
+  ATMOSPHERE_ORDER,
   ATMOSPHERE_PRESETS,
+  computeAtmosphereForHour,
   detectRecommendedGraphicsPreset,
+  formatHourClock,
+  getCurrentLocalHour,
+  getPhaseNameForHour,
   GRAPHICS_PRESETS,
+  PRESET_REPRESENTATIVE_HOUR,
+  WEATHER_ORDER,
+  WEATHER_PRESETS,
 } from './world/AtmospherePresets';
 import { CloudSystem } from './world/CloudSystem';
 import { SkyAtmosphere } from './world/SkyAtmosphere';
 import { TerrainSystem } from './world/TerrainSystem';
+import { WeatherFX } from './world/WeatherFX';
 
 class DreamFlightApp {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
 
   private activeAtmosphereId: AtmospherePresetId = 'afternoon_moon';
+  private activeWeatherId: WeatherPresetId = 'ghibli_cumulus';
+  private autoDayNight = true;
+  private currentHour = getCurrentLocalHour();
+  private lastAutoSyncElapsed = -999;
+  private activeCompositeAtm: AtmospherePreset;
   private activeGraphicsId: GraphicsPresetId;
 
   private sky: SkyAtmosphere;
   private clouds: CloudSystem;
+  private weatherFx: WeatherFX;
   private terrain: TerrainSystem;
   private aircraft: AircraftModel;
   private physics: FlightPhysics;
@@ -50,7 +70,7 @@ class DreamFlightApp {
 
   private flightStarted = false;
 
-  constructor() {
+  constructor(installer: OfflineInstaller) {
     const canvas = document.getElementById('flight-canvas') as HTMLCanvasElement;
     this.activeGraphicsId = detectRecommendedGraphicsPreset();
     const initialQuality = GRAPHICS_PRESETS[this.activeGraphicsId];
@@ -73,6 +93,7 @@ class DreamFlightApp {
 
     this.sky = new SkyAtmosphere(this.renderer, this.scene, initialQuality);
     this.clouds = new CloudSystem(this.scene, initialQuality);
+    this.weatherFx = new WeatherFX(this.scene);
     this.terrain = new TerrainSystem(this.scene, initialQuality);
     this.aircraft = new AircraftModel(this.scene);
     this.physics = new FlightPhysics();
@@ -80,9 +101,12 @@ class DreamFlightApp {
     this.audio = new AudioSystem();
     this.gameplay = new GameplayManager(this.scene);
 
+    this.activeCompositeAtm = computeAtmosphereForHour(this.currentHour);
+
     this.input = new InputManager(canvas, (connected, label) => {
       this.ui?.showToast(
-        connected ? `🎮 Connected: ${label}` : `Controller disconnected: ${label}`
+        connected ? `Connected: ${label}` : `Controller disconnected: ${label}`,
+        'gamepad'
       );
     });
 
@@ -92,6 +116,7 @@ class DreamFlightApp {
       this.cameraSys,
       this.audio,
       this.gameplay,
+      installer,
       {
         onStartFlight: (
           mode: GameplayModeId,
@@ -117,19 +142,49 @@ class DreamFlightApp {
           this.aircraft.resetTrails(this.physics.telemetry.position);
         },
         onSelectAtmosphere: (presetId: AtmospherePresetId) => {
-          this.applyAtmosphere(presetId);
+          this.autoDayNight = false;
+          this.activeAtmosphereId = presetId;
+          this.currentHour = PRESET_REPRESENTATIVE_HOUR[presetId];
+          this.refreshEnvironment(ATMOSPHERE_PRESETS[presetId]);
+        },
+        onSelectWeather: (weatherId: WeatherPresetId) => {
+          this.applyWeather(weatherId, true);
+        },
+        onCycleWeather: () => {
+          this.cycleWeather();
+        },
+        onSetAutoDayNight: (enabled: boolean) => {
+          this.autoDayNight = enabled;
+          if (enabled) {
+            this.currentHour = getCurrentLocalHour();
+            this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
+            this.ui.showToast(
+              `Auto Real-Time Sky (${formatHourClock(this.currentHour)})`,
+              'clock'
+            );
+          }
+        },
+        onSetManualHour: (hour: number) => {
+          this.autoDayNight = false;
+          this.currentHour = hour;
+          this.refreshEnvironment(computeAtmosphereForHour(hour));
         },
         onSelectGraphics: (gfxId: GraphicsPresetId) => {
           this.applyGraphics(gfxId);
         },
         getActiveAircraft: () => this.aircraft.getVariant(),
         getActiveAtmosphere: () => this.activeAtmosphereId,
+        getActiveWeather: () => this.activeWeatherId,
+        isAutoDayNight: () => this.autoDayNight,
+        getCurrentHour: () => this.currentHour,
         getActiveGraphics: () => this.activeGraphicsId,
         getCurrentFps: () => this.currentFps,
       }
     );
 
-    this.applyAtmosphere('afternoon_moon');
+    // Initialize Real-Time Day-Night Sky + Default Ghibli Cumulus Weather
+    this.applyWeather('ghibli_cumulus', false);
+    this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
     this.aircraft.resetTrails(this.physics.telemetry.position);
     this.cameraSys.snapToAircraft(this.physics.telemetry);
 
@@ -137,12 +192,17 @@ class DreamFlightApp {
     window.addEventListener('orientationchange', () => {
       window.setTimeout(() => this.onResize(), 120);
     });
+    window.addEventListener('wheel', (e) => {
+      if (!this.ui.isMenuOpen()) {
+        this.cameraSys.adjustOrbitZoom(Math.sign(e.deltaY) * 1.4);
+      }
+    });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
 
     (window as unknown as Record<string, unknown>).__DREAM_FLIGHT__ = {
       getTelemetry: () => this.physics.telemetry,
       getAtmosphere: () => this.activeAtmosphereId,
-      getGraphics: () => this.activeGraphicsId,
+      getWeather: () => this.activeWeatherId,
       getCameraMode: () => this.cameraSys.getMode(),
       getFps: () => this.currentFps,
     };
@@ -151,12 +211,62 @@ class DreamFlightApp {
     this.renderer.setAnimationLoop(() => this.tick());
   }
 
-  private applyAtmosphere(presetId: AtmospherePresetId): void {
-    this.activeAtmosphereId = presetId;
-    const preset = ATMOSPHERE_PRESETS[presetId];
-    this.sky.applyPreset(preset, this.scene, this.renderer);
-    this.clouds.applyPreset(preset, this.sky.sunDirection);
-    this.terrain.applyPreset(preset, this.sky.sunDirection);
+  private refreshEnvironment(baseAtm: AtmospherePreset): void {
+    const weather = WEATHER_PRESETS[this.activeWeatherId];
+    this.activeAtmosphereId = baseAtm.id;
+    this.activeCompositeAtm = applyWeatherToAtmosphere(baseAtm, weather);
+
+    this.sky.applyPreset(this.activeCompositeAtm, this.scene, this.renderer);
+    this.clouds.applyPreset(this.activeCompositeAtm, this.sky.sunDirection);
+    this.terrain.applyPreset(this.activeCompositeAtm, this.sky.sunDirection);
+  }
+
+  private applyWeather(weatherId: WeatherPresetId, notify = true): void {
+    this.activeWeatherId = weatherId;
+    const weather = WEATHER_PRESETS[weatherId];
+    this.clouds.applyWeather(weather);
+    this.weatherFx.applyWeather(weather);
+
+    const baseAtm = this.autoDayNight
+      ? computeAtmosphereForHour(this.currentHour)
+      : computeAtmosphereForHour(this.currentHour);
+    this.refreshEnvironment(baseAtm);
+
+    if (notify) {
+      this.ui.showToast(`Weather: ${weather.name}`, weather.icon as IconName);
+    }
+  }
+
+  private cycleWeather(): void {
+    const idx = WEATHER_ORDER.indexOf(this.activeWeatherId);
+    const next = WEATHER_ORDER[(idx + 1) % WEATHER_ORDER.length];
+    this.applyWeather(next, true);
+  }
+
+  private cycleTimePreset(): void {
+    if (this.autoDayNight) {
+      this.autoDayNight = false;
+      const next = ATMOSPHERE_ORDER[0];
+      this.currentHour = PRESET_REPRESENTATIVE_HOUR[next];
+      this.refreshEnvironment(ATMOSPHERE_PRESETS[next]);
+      this.ui.showToast(`Time: ${ATMOSPHERE_PRESETS[next].name}`, 'sun');
+    } else {
+      const idx = ATMOSPHERE_ORDER.indexOf(this.activeAtmosphereId);
+      if (idx === ATMOSPHERE_ORDER.length - 1) {
+        this.autoDayNight = true;
+        this.currentHour = getCurrentLocalHour();
+        this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
+        this.ui.showToast(
+          `Time: Auto Real-Time (${formatHourClock(this.currentHour)} · ${getPhaseNameForHour(this.currentHour)})`,
+          'clock'
+        );
+      } else {
+        const next = ATMOSPHERE_ORDER[idx + 1];
+        this.currentHour = PRESET_REPRESENTATIVE_HOUR[next];
+        this.refreshEnvironment(ATMOSPHERE_PRESETS[next]);
+        this.ui.showToast(`Time: ${ATMOSPHERE_PRESETS[next].name}`, 'sun');
+      }
+    }
   }
 
   private applyGraphics(gfxId: GraphicsPresetId): void {
@@ -165,7 +275,7 @@ class DreamFlightApp {
     const q = GRAPHICS_PRESETS[gfxId];
 
     this.renderer.shadowMap.enabled = q.shadowsEnabled;
-    this.cameraSys.camera.far = Math.max(26000, q.drawDistance + 6000);
+    this.cameraSys.camera.far = Math.max(28000, q.drawDistance + 6000);
     this.cameraSys.camera.updateProjectionMatrix();
 
     this.sky.applyGraphicsQuality(q);
@@ -189,7 +299,7 @@ class DreamFlightApp {
   private updateAdaptivePerformance(dt: number): void {
     this.fpsFrames++;
     this.fpsAccumTime += dt;
-    if (this.fpsAccumTime < 1.25) return;
+    if (this.fpsAccumTime < 1.0) return;
 
     this.currentFps = this.fpsFrames / this.fpsAccumTime;
     this.fpsFrames = 0;
@@ -198,7 +308,7 @@ class DreamFlightApp {
     const q = GRAPHICS_PRESETS[this.activeGraphicsId];
     if (!q.adaptiveResolution) return;
 
-    if (this.currentFps < 27 && this.adaptiveDprScale > 0.76) {
+    if (this.currentFps < 28 && this.adaptiveDprScale > 0.76) {
       this.adaptiveDprScale = Math.max(0.75, this.adaptiveDprScale - 0.1);
       this.updateRendererSize();
     } else if (this.currentFps > 54 && this.adaptiveDprScale < 1.0) {
@@ -212,8 +322,19 @@ class DreamFlightApp {
     this.elapsed += dt;
     this.updateAdaptivePerformance(dt);
 
-    const inputs = this.input.poll();
+    // Periodically sync real-time day-night clock smoothly every 15 seconds when Auto is enabled
+    if (this.autoDayNight && this.elapsed - this.lastAutoSyncElapsed > 15.0) {
+      this.lastAutoSyncElapsed = this.elapsed;
+      this.currentHour = getCurrentLocalHour();
+      this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
+    }
+
     const inMenu = this.ui.isMenuOpen();
+    const inputs = this.input.poll(inMenu);
+
+    if (inMenu) {
+      this.ui.handleControllerMenuNav(inputs.menuNav);
+    }
 
     if (inputs.togglePause && this.flightStarted) {
       if (inMenu) {
@@ -229,15 +350,42 @@ class DreamFlightApp {
 
     if (!inMenu && inputs.switchCamera) {
       const nextCam = this.cameraSys.cycleMode();
-      this.ui.showToast(`Camera: ${CAMERA_LABELS[nextCam]}`);
+      this.ui.showToast(`Camera: ${CAMERA_LABELS[nextCam]}`, 'camera');
+    }
+
+    if (!inMenu && inputs.cycleWeather) {
+      this.audio.playUiChime();
+      this.cycleWeather();
+    }
+
+    if (!inMenu && inputs.cycleTime) {
+      this.audio.playUiChime();
+      this.cycleTimePreset();
+    }
+
+    if (!inMenu && inputs.cycleAircraft) {
+      const idx = AIRCRAFT_ORDER.indexOf(this.aircraft.getVariant());
+      const next = AIRCRAFT_ORDER[(idx + 1) % AIRCRAFT_ORDER.length];
+      this.aircraft.buildVariant(next);
+      this.physics.setVariant(next);
+      this.aircraft.resetTrails(this.physics.telemetry.position);
+      this.audio.playUiChime(true);
+      this.ui.showToast(`Aircraft: ${AIRCRAFT_SPECS[next].name}`, 'plane');
+    }
+
+    if (!inMenu && inputs.toggleZoom) {
+      const label = this.cameraSys.cycleZoomPreset();
+      this.ui.showToast(`Camera Distance: ${label}`, 'zoom');
     }
 
     if (!inMenu && inputs.resetAircraft && !this.physics.telemetry.crashed) {
       this.physics.recoverInAir();
       this.aircraft.resetTrails(this.physics.telemetry.position);
+      this.ui.showToast('Aircraft stabilized in sky', 'reset');
     }
 
-    const preset = ATMOSPHERE_PRESETS[this.activeAtmosphereId];
+    const preset = this.activeCompositeAtm;
+    const weather = WEATHER_PRESETS[this.activeWeatherId];
     const cloudDensity = this.clouds.getCloudDensityAt(this.physics.telemetry.position);
 
     if (!inMenu) {
@@ -247,7 +395,8 @@ class DreamFlightApp {
         (x, z) => this.terrain.getTerrainHeight(x, z),
         (x, z) => this.terrain.getWaterSurfaceHeight(x, z),
         (x, z) => this.terrain.classifySurface(x, z),
-        cloudDensity
+        cloudDensity,
+        weather.turbulenceBoost
       );
 
       const h = this.physics.telemetry.haptics;
@@ -255,7 +404,10 @@ class DreamFlightApp {
       if (h.touchdownIntensity > 0.05) {
         this.audio.playTouchdownSound(h.touchdownIntensity, false);
       } else if (h.scrapeIntensity > 0.05) {
-        this.audio.playTouchdownSound(h.scrapeIntensity, this.physics.telemetry.surfaceType === 'water');
+        this.audio.playTouchdownSound(
+          h.scrapeIntensity,
+          this.physics.telemetry.surfaceType === 'water'
+        );
       }
     } else if (!this.flightStarted) {
       const showcaseIn = {
@@ -268,6 +420,10 @@ class DreamFlightApp {
         airbrake: false,
         toggleGear: false,
         switchCamera: false,
+        cycleWeather: false,
+        cycleTime: false,
+        cycleAircraft: false,
+        toggleZoom: false,
         resetAircraft: false,
         togglePause: false,
       };
@@ -277,7 +433,8 @@ class DreamFlightApp {
         (x, z) => this.terrain.getTerrainHeight(x, z),
         (x, z) => this.terrain.getWaterSurfaceHeight(x, z),
         (x, z) => this.terrain.classifySurface(x, z),
-        cloudDensity
+        cloudDensity,
+        0
       );
       if (this.physics.telemetry.position.z < -4800) {
         this.physics.telemetry.position.z = 520;
@@ -289,9 +446,11 @@ class DreamFlightApp {
     }
 
     if (this.scene.fog instanceof THREE.FogExp2) {
-      const targetFog = preset.fogDensity + cloudDensity * 0.0028;
+      const targetFog = preset.fogDensity + cloudDensity * 0.0022;
       this.scene.fog.density += (targetFog - this.scene.fog.density) * Math.min(1, dt * 5.0);
-      this.scene.fog.color.copy(preset.fogColor).lerp(preset.cloudBrightColor, cloudDensity * 0.72);
+      this.scene.fog.color
+        .copy(preset.fogColor)
+        .lerp(preset.cloudBrightColor, cloudDensity * 0.68);
     }
 
     const telem = this.physics.telemetry;
@@ -300,6 +459,7 @@ class DreamFlightApp {
     this.cameraSys.update(dt, telem, this.aircraft, inputs, inMenu && !this.flightStarted);
     this.sky.update(this.elapsed, telem.position);
     this.clouds.update(dt, this.elapsed, telem.position, cloudDensity);
+    this.weatherFx.update(dt, this.elapsed, telem.position, telem.velocity);
     this.terrain.update(this.elapsed, telem.position);
 
     const gpStatus = this.gameplay.update(dt, this.elapsed, telem, this.terrain.airport, () =>
@@ -312,6 +472,8 @@ class DreamFlightApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  new DreamFlightApp();
+window.addEventListener('DOMContentLoaded', async () => {
+  const installer = new OfflineInstaller();
+  await installer.ensureInstalledToBrowser();
+  new DreamFlightApp(installer);
 });

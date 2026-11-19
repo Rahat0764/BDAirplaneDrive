@@ -78,6 +78,7 @@ export class FlightPhysics {
       stalling: false,
       crashed: false,
       cloudDensity: 0,
+      waterSkimIntensity: 0,
       gForce: 1.0,
       aileronInput: 0,
       elevatorInput: 0,
@@ -144,6 +145,7 @@ export class FlightPhysics {
     t.surfaceType = preset.onGround ? 'runway' : 'air';
     t.stalling = false;
     t.crashed = false;
+    t.waterSkimIntensity = 0;
     t.gForce = 1.0;
     t.haptics.touchdownIntensity = 0;
     t.haptics.scrapeIntensity = 0;
@@ -162,17 +164,18 @@ export class FlightPhysics {
     getTerrainHeight: (x: number, z: number) => number,
     getWaterSurfaceHeight: (x: number, z: number) => number | null,
     classifySurface: (x: number, z: number) => 'runway' | 'highway' | 'water' | 'terrain',
-    cloudDensity: number
+    cloudDensity: number,
+    weatherTurbulence = 0
   ): void {
     const dt = Math.min(rawDt, 0.05);
     const t = this.telemetry;
     const spec = AIRCRAFT_SPECS[this.variant];
     const isRelaxed = this.options.flightMode === 'relaxed';
 
-    // Reset per-frame haptic impulse triggers
     t.haptics.touchdownIntensity = 0;
     t.haptics.scrapeIntensity = 0;
     t.haptics.groundRollSpeedNorm = 0;
+    t.waterSkimIntensity = 0;
     if (this.scrapeCooldown > 0) this.scrapeCooldown -= dt;
 
     t.cloudDensity = cloudDensity;
@@ -204,7 +207,7 @@ export class FlightPhysics {
     const targetRpm = clamp(0.18 + t.throttle * 0.82 + (t.airspeedMs / 95) * 0.08, 0.15, 1.05);
     t.rpmNormalized += (targetRpm - t.rpmNormalized) * Math.min(1, dt * 3.5);
 
-    const smoothRate = isRelaxed ? 7.5 : 11.5;
+    const smoothRate = isRelaxed ? 7.8 : 11.5;
     this.smoothedPitchIn += (inputs.pitch - this.smoothedPitchIn) * Math.min(1, dt * smoothRate);
     this.smoothedRollIn += (inputs.roll - this.smoothedRollIn) * Math.min(1, dt * smoothRate);
     this.smoothedYawIn += (inputs.yaw - this.smoothedYawIn) * Math.min(1, dt * smoothRate);
@@ -222,9 +225,8 @@ export class FlightPhysics {
     const currentRollRad = -Math.asin(clamp(this.tmpRight.y, -1, 1));
 
     const stallMs = spec.stallSpeedKts * MS_PER_KTS;
-    const cruiseMs = spec.cruiseSpeedKts * MS_PER_KTS;
     const maxMs = spec.maxSpeedKts * MS_PER_KTS;
-    const speedAuthority = clamp(t.airspeedMs / (stallMs * 1.15), 0.22, 1.25);
+    const speedAuthority = clamp(t.airspeedMs / (stallMs * 1.15), 0.24, 1.25);
 
     let pitchRateCmd = this.smoothedPitchIn * spec.pitchRate * speedAuthority;
     let rollRateCmd = -this.smoothedRollIn * spec.rollRate * speedAuthority;
@@ -235,9 +237,8 @@ export class FlightPhysics {
       const worldTurnQuat = this.tmpQuat.setFromAxisAngle(this.worldUp, bankTurnRate * dt);
       t.quaternion.premultiply(worldTurnQuat);
     } else {
-      // Smooth nosewheel steering on Runways & Landable Scenic Highway!
       const groundSteer =
-        (-this.smoothedYawIn - this.smoothedRollIn * 0.62) * 0.92 * clamp(t.airspeedMs / 12, 0, 1);
+        (-this.smoothedYawIn - this.smoothedRollIn * 0.65) * 0.96 * clamp(t.airspeedMs / 10, 0, 1);
       const steerQuat = this.tmpQuat.setFromAxisAngle(this.worldUp, groundSteer * dt);
       t.quaternion.premultiply(steerQuat);
       rollRateCmd *= 0.08;
@@ -257,9 +258,11 @@ export class FlightPhysics {
       }
     }
 
-    this.turbulenceClock += dt * (0.55 + cloudDensity * 0.85);
+    this.turbulenceClock += dt * (0.55 + cloudDensity * 0.85 + weatherTurbulence * 0.7);
     const turbScale =
-      (isRelaxed ? 0.016 : 0.052) * (1.0 + cloudDensity * 1.45) * clamp(t.airspeedMs / 40, 0, 1);
+      (isRelaxed ? 0.016 : 0.052) *
+      (1.0 + cloudDensity * 1.4 + weatherTurbulence * 1.65) *
+      clamp(t.airspeedMs / 40, 0, 1);
     const turbRoll = noise2D(this.turbulenceClock, 1.7) * turbScale;
     const turbPitch = noise2D(this.turbulenceClock, 9.3) * turbScale * 0.65;
 
@@ -296,7 +299,7 @@ export class FlightPhysics {
     const sinAoA = clamp(-this.tmpVelDir.dot(this.tmpUp), -0.6, 0.6);
     const aoaRad = Math.asin(sinAoA);
 
-    const maxThrustAccel = isRelaxed ? 7.8 : 6.9;
+    const maxThrustAccel = isRelaxed ? 8.0 : 7.0;
     const speedFalloff = 1.0 - clamp(speed / (maxMs * 1.18), 0, 0.65);
     const thrustAccel = t.throttle * maxThrustAccel * speedFalloff;
 
@@ -334,8 +337,9 @@ export class FlightPhysics {
 
     t.position.addScaledVector(t.velocity, dt);
 
+    // Wide open world boundary (includes expanded open sea!)
     const distSq = t.position.x * t.position.x + (t.position.z + 1500) * (t.position.z + 1500);
-    if (distSq > 11500 * 11500) {
+    if (distSq > 13500 * 13500) {
       const pull = new THREE.Vector3(-t.position.x, 0, -(t.position.z + 1500)).normalize();
       t.position.addScaledVector(pull, dt * 45);
     }
@@ -345,47 +349,74 @@ export class FlightPhysics {
       if (t.velocity.y > 0) t.velocity.y *= 0.5;
     }
 
-    // Terrain, Highway, Runway & Water Surface Contact + Haptic Vibration Detection!
+    // Terrain, Highway, Runway & Dynamic Wave Water Physics!
     const rawGroundY = getTerrainHeight(t.position.x, t.position.z);
     const waterY = getWaterSurfaceHeight(t.position.x, t.position.z);
     const surfKind = classifySurface(t.position.x, t.position.z);
     const effectiveSurfaceY = waterY !== null ? Math.max(rawGroundY, waterY) : Math.max(0.0, rawGroundY);
 
-    const gearClearance = t.gearDown ? 1.18 : 0.58;
+    // Low-altitude ground-effect water spray when skimming just above the sea!
+    if (surfKind === 'water' && waterY !== null) {
+      const heightAboveWave = t.position.y - waterY;
+      if (heightAboveWave < 5.5 && t.airspeedMs > 14) {
+        t.waterSkimIntensity = clamp((5.5 - heightAboveWave) / 4.2, 0, 0.55) * clamp(t.airspeedMs / 45, 0, 1);
+      }
+    }
+
+    const gearClearance = t.gearDown ? 1.18 : 0.62;
     const minCenterY = effectiveSurfaceY + gearClearance;
 
     if (t.position.y <= minCenterY) {
       const impactVertSpeed = Math.max(0, -t.velocity.y);
       const overWater = surfKind === 'water';
       const isPaved = surfKind === 'runway' || surfKind === 'highway';
-      const excessiveBank = Math.abs(THREE.MathUtils.radToDeg(currentRollRad)) > 32;
-      const hardImpact = impactVertSpeed > (isRelaxed ? 13.0 : 7.0);
-      const gearUpStrike = !t.gearDown && !isRelaxed;
+      const excessiveBank = Math.abs(THREE.MathUtils.radToDeg(currentRollRad)) > 34;
+      const hardImpact = impactVertSpeed > (isRelaxed ? 13.0 : 7.5);
+      const gearUpStrike = !t.gearDown && !isRelaxed && !overWater;
 
-      if (this.options.collisionDamage && (overWater || excessiveBank || hardImpact || gearUpStrike)) {
+      if (this.options.collisionDamage && (excessiveBank || hardImpact || gearUpStrike)) {
         t.crashed = true;
-        t.haptics.scrapeIntensity = 1.0; // Strong crash vibration jolt!
+        t.haptics.scrapeIntensity = 1.0;
         this.crashCooldown = 2.2;
         t.velocity.set(0, 0, 0);
         return;
       }
 
-      t.position.y = minCenterY;
-
       if (overWater) {
-        // Skimming water surface -> crisp splash vibration pulse + gentle bounce!
+        // REALISTIC HYDROPLANING, BUOYANCY & WAVE BOBBING PHYSICS!
         t.surfaceType = 'water';
-        if (this.scrapeCooldown <= 0) {
-          t.haptics.scrapeIntensity = clamp(0.45 + impactVertSpeed * 0.1, 0.45, 1.0);
-          this.scrapeCooldown = 0.28;
+        const submergeDepth = minCenterY - t.position.y;
+        const speedNorm = clamp(t.airspeedMs / 48, 0, 1);
+
+        // Buoyancy + hydrodynamic planing lift pushes smoothly along wave surface
+        const buoyancyAccel = submergeDepth * 26.0 + speedNorm * 4.2;
+        t.velocity.y += (buoyancyAccel - t.velocity.y * 3.8) * dt;
+        t.position.y = Math.max(effectiveSurfaceY + 0.48, t.position.y);
+
+        // Realistic water drag slows aircraft gently while skimming
+        const waterDrag = 0.42 + (t.airbrakeActive ? 0.95 : 0.0) + (t.gearDown ? 0.25 : 0.0);
+        t.velocity.x *= Math.max(0, 1 - waterDrag * dt);
+        t.velocity.z *= Math.max(0, 1 - waterDrag * dt);
+
+        // Gentle wave-bobbing pitch & roll stabilization on water
+        this.tmpEuler.setFromQuaternion(t.quaternion, 'YXZ');
+        const waveBob = Math.sin(this.turbulenceClock * 3.2) * 0.04;
+        this.tmpEuler.z *= Math.max(0, 1 - dt * 5.0);
+        this.tmpEuler.x = THREE.MathUtils.lerp(this.tmpEuler.x, 0.055 + waveBob, Math.min(1, dt * 4.5));
+        t.quaternion.setFromEuler(this.tmpEuler);
+
+        t.waterSkimIntensity = clamp(0.45 + speedNorm * 0.55 + submergeDepth * 0.3, 0.35, 1.0);
+        t.onGround = speedNorm < 0.72;
+        t.haptics.groundRollSpeedNorm = speedNorm * 0.58;
+
+        if (!this.wasOnGround || (impactVertSpeed > 2.5 && this.scrapeCooldown <= 0)) {
+          t.haptics.scrapeIntensity = clamp(0.38 + impactVertSpeed * 0.09, 0.38, 0.95);
+          this.scrapeCooldown = 0.26;
         }
-        t.position.y = effectiveSurfaceY + 2.2;
-        t.velocity.y = Math.max(2.6, Math.abs(t.velocity.y) * 0.35);
-        t.onGround = false;
       } else {
+        t.position.y = minCenterY;
         t.surfaceType = surfKind;
 
-        // First frame wheels touch down on runway, highway, or grass -> trigger Touchdown Vibration!
         if (!this.wasOnGround) {
           const tdForce = clamp(0.28 + (impactVertSpeed / 6.0) * 0.72, 0.28, 1.0);
           t.haptics.touchdownIntensity = tdForce;
@@ -397,7 +428,6 @@ export class FlightPhysics {
         if (t.velocity.y < 0) t.velocity.y = 0;
         t.onGround = liftAccel * this.tmpUp.y < GRAVITY * 1.02;
 
-        // Continuous tire ground-roll vibration (silky on paved runway/highway, bumpier on off-road grass!)
         const rollNorm = clamp(t.airspeedMs / 55, 0, 1);
         t.haptics.groundRollSpeedNorm = isPaved ? rollNorm * 0.42 : rollNorm * 0.85;
 
@@ -406,7 +436,6 @@ export class FlightPhysics {
         this.tmpEuler.x = clamp(this.tmpEuler.x, -0.05, 0.24);
         t.quaternion.setFromEuler(this.tmpEuler);
 
-        // Smooth paved rollout on both Airport Runways AND the 7.4km Scenic Highway!
         const rollFriction = isPaved
           ? t.throttle < 0.1 ? 0.55 : 0.045
           : t.throttle < 0.1 ? 1.15 : 0.24;

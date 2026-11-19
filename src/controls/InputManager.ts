@@ -1,19 +1,29 @@
-import { ControlInputs, ControllerMapping, ControllerSettings, HapticFeedbackEvents } from '../types';
+import {
+  ControlInputs,
+  ControllerMapping,
+  ControllerSettings,
+  HapticFeedbackEvents,
+  MenuNavActions,
+} from '../types';
 import { clamp } from '../utils/noise';
 
-const STORAGE_KEY = 'dream_flight_controller_v2';
+const STORAGE_KEY = 'dream_flight_controller_v3';
 
 export const DEFAULT_CONTROLLER_MAPPING: ControllerMapping = {
   pitchAxis: 1,
   rollAxis: 0,
   yawAxis: 2,
-  throttleUpBtn: 7,
-  throttleDownBtn: 6,
-  cameraBtn: 3,
-  gearBtn: 0,
-  airbrakeBtn: 2,
-  resetBtn: 1,
-  pauseBtn: 9,
+  throttleUpBtn: 7,   // R2 / RT
+  throttleDownBtn: 6, // L2 / LT
+  cameraBtn: 4,       // L1 / LB -> Switch Camera
+  weatherBtn: 5,      // R1 / RB -> Switch Weather
+  timeBtn: 3,         // Triangle / Y -> Switch Time of Day
+  gearBtn: 0,         // Cross / A -> Landing Gear
+  airbrakeBtn: 2,     // Square / X -> Airbrake (hold)
+  resetBtn: 1,        // Circle / B -> Reset / Stabilize
+  pauseBtn: 9,        // Options / Start -> Menu
+  hudBtn: 8,          // Share / Select -> Toggle HUD Mode
+  zoomBtn: 11,        // R3 -> Camera Zoom Distance
 };
 
 export interface GamepadSnapshot {
@@ -47,7 +57,7 @@ type ExtendedGamepad = Omit<Gamepad, 'vibrationActuator'> & {
 
 export class InputManager {
   public settings: ControllerSettings = {
-    deadzone: 0.12,
+    deadzone: 0.11,
     sensitivity: 1.0,
     invertPitch: false,
     vibrationEnabled: true,
@@ -59,6 +69,10 @@ export class InputManager {
   private oneShotActions = {
     toggleGear: false,
     switchCamera: false,
+    cycleWeather: false,
+    cycleTime: false,
+    cycleAircraft: false,
+    toggleZoom: false,
     resetAircraft: false,
     togglePause: false,
     cycleHud: false,
@@ -66,6 +80,7 @@ export class InputManager {
 
   public touchStickX = 0;
   public touchStickY = 0;
+  public touchYaw = 0;
   public touchThrottleDirect: number | null = null;
   public touchAirbrake = false;
   private touchActive = false;
@@ -73,6 +88,7 @@ export class InputManager {
   private lookAccumX = 0;
   private lookAccumY = 0;
   private pointerDraggingLook = false;
+  private lookPointerId: number | null = null;
   private lastPointerX = 0;
   private lastPointerY = 0;
 
@@ -84,6 +100,7 @@ export class InputManager {
 
   private rollRumbleTimer = 0;
   private impulseLockUntil = 0;
+  private stickNavCooldown = 0;
 
   constructor(canvas: HTMLCanvasElement, onGamepadNotice?: (connected: boolean, label: string) => void) {
     this.onConnectionChange = onGamepadNotice;
@@ -119,7 +136,7 @@ export class InputManager {
 
   public resetControllerDefaults(): void {
     this.settings = {
-      deadzone: 0.12,
+      deadzone: 0.11,
       sensitivity: 1.0,
       invertPitch: false,
       vibrationEnabled: true,
@@ -129,9 +146,6 @@ export class InputManager {
     this.saveSettings();
   }
 
-  /**
-   * Triggers DualShock 4 / DualSense / Xbox controller dual-rumble OR Android phone haptic pulse!
-   */
   public triggerVibration(durationMs: number, strongMag: number, weakMag: number, allowPhoneFallback = true): void {
     if (!this.settings.vibrationEnabled) return;
 
@@ -155,10 +169,9 @@ export class InputManager {
       }
     }
 
-    // Android phone tactile vibration fallback when touching down or scraping!
     if (!handledByGamepad && allowPhoneFallback && typeof navigator.vibrate === 'function') {
       try {
-        navigator.vibrate(Math.min(220, Math.max(18, Math.round(durationMs * Math.max(strongMag, 0.35)))));
+        navigator.vibrate(Math.min(220, Math.max(16, Math.round(durationMs * Math.max(strongMag, 0.35)))));
       } catch {
         // Ignore
       }
@@ -169,25 +182,22 @@ export class InputManager {
     if (!this.settings.vibrationEnabled) return;
     const now = performance.now();
 
-    // 1. Hard Scrape / Water Skim / Crash Jolt (Highest priority)
     if (haptics.scrapeIntensity > 0.05) {
-      const mag = clamp(haptics.scrapeIntensity, 0.4, 1.0);
-      this.impulseLockUntil = now + 260;
-      this.triggerVibration(260, mag, mag * 0.85, true);
+      const mag = clamp(haptics.scrapeIntensity, 0.35, 1.0);
+      this.impulseLockUntil = now + 220;
+      this.triggerVibration(220, mag, mag * 0.82, true);
       return;
     }
 
-    // 2. Wheel Touchdown Thump on Runway, Highway, or Valley Meadow!
     if (haptics.touchdownIntensity > 0.05) {
-      const mag = clamp(haptics.touchdownIntensity, 0.3, 1.0);
-      this.impulseLockUntil = now + 185;
-      this.triggerVibration(185, mag * 0.9, mag * 0.65, true);
+      const mag = clamp(haptics.touchdownIntensity, 0.28, 1.0);
+      this.impulseLockUntil = now + 180;
+      this.triggerVibration(180, mag * 0.9, mag * 0.62, true);
       return;
     }
 
     if (now < this.impulseLockUntil) return;
 
-    // 3. Continuous subtle Ground Roll tire rumble or Stall Stick Shaker (Gamepad motor)
     this.rollRumbleTimer -= dt;
     if (this.rollRumbleTimer <= 0) {
       if (haptics.groundRollSpeedNorm > 0.08) {
@@ -209,6 +219,9 @@ export class InputManager {
 
       if (e.code === 'KeyG') this.oneShotActions.toggleGear = true;
       if (e.code === 'KeyC') this.oneShotActions.switchCamera = true;
+      if (e.code === 'KeyV') this.oneShotActions.cycleWeather = true;
+      if (e.code === 'KeyT') this.oneShotActions.cycleTime = true;
+      if (e.code === 'KeyZ') this.oneShotActions.toggleZoom = true;
       if (e.code === 'Backspace' || e.code === 'Backquote') this.oneShotActions.resetAircraft = true;
       if (e.code === 'Escape' || e.code === 'KeyP') this.oneShotActions.togglePause = true;
       if (e.code === 'KeyH') this.oneShotActions.cycleHud = true;
@@ -226,27 +239,31 @@ export class InputManager {
   private bindPointerLook(canvas: HTMLCanvasElement): void {
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (this.pointerDraggingLook) return;
       this.pointerDraggingLook = true;
+      this.lookPointerId = e.pointerId;
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
     });
 
     window.addEventListener('pointermove', (e) => {
-      if (!this.pointerDraggingLook) return;
+      if (!this.pointerDraggingLook || e.pointerId !== this.lookPointerId) return;
       const dx = e.clientX - this.lastPointerX;
       const dy = e.clientY - this.lastPointerY;
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
-      this.lookAccumX += dx * 0.0032;
-      this.lookAccumY += dy * 0.0032;
+      this.lookAccumX += dx * 0.0036;
+      this.lookAccumY += dy * 0.0036;
     });
 
-    window.addEventListener('pointerup', () => {
-      this.pointerDraggingLook = false;
-    });
-    window.addEventListener('pointercancel', () => {
-      this.pointerDraggingLook = false;
-    });
+    const endLook = (e: PointerEvent) => {
+      if (e.pointerId === this.lookPointerId) {
+        this.pointerDraggingLook = false;
+        this.lookPointerId = null;
+      }
+    };
+    window.addEventListener('pointerup', endLook);
+    window.addEventListener('pointercancel', endLook);
   }
 
   private bindGamepadEvents(): void {
@@ -256,8 +273,7 @@ export class InputManager {
       const label = this.identifyControllerProfile(e.gamepad).profileLabel;
       this.activeSource = 'gamepad';
       this.onConnectionChange?.(true, label);
-      // Gentle welcome pulse on controller connect
-      this.triggerVibration(120, 0.35, 0.5, false);
+      this.triggerVibration(110, 0.3, 0.45, false);
     });
 
     window.addEventListener('gamepaddisconnected', (e) => {
@@ -287,8 +303,8 @@ export class InputManager {
     }
 
     const compatibilityNote = isStandard
-      ? 'Standard W3C Gamepad mapping detected.'
-      : 'Non-standard OS/Android browser mapping detected — use Custom Mapping below if any axis/button differs.';
+      ? 'Standard W3C Gamepad mapping active (L1 Camera, R1 Weather, Full Menu Control).'
+      : 'Non-standard controller mapping detected — customize axes/buttons below if needed.';
 
     return { profileLabel, compatibilityNote };
   }
@@ -323,7 +339,7 @@ export class InputManager {
         axes: [],
         buttons: [],
         compatibilityNote:
-          'Press any button on a paired PS4 DualShock 4 or Bluetooth controller to wake it.',
+          'Press any button on a paired PS4, DualSense, Xbox, or Bluetooth controller to connect.',
       };
     }
 
@@ -393,17 +409,29 @@ export class InputManager {
     const abs = Math.abs(centered);
     if (abs <= dz) return 0;
     const norm = (abs - dz) / Math.max(1 - dz, 0.05);
-    const curved = Math.pow(clamp(norm, 0, 1), 1.35) * this.settings.sensitivity;
+    // Silky progressive flight stick response curve for micro-precision + crisp full deflection
+    const curved = Math.pow(clamp(norm, 0, 1), 1.42) * this.settings.sensitivity;
     return clamp(Math.sign(centered) * curved, -1, 1);
   }
 
-  public poll(): ControlInputs {
+  public poll(inMenu = false): ControlInputs {
     let pitch = 0;
     let roll = 0;
     let yaw = 0;
     let throttleDelta = 0;
     let throttleDirect: number | null = null;
     let airbrake = false;
+
+    const menuNav: MenuNavActions = {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      confirm: false,
+      back: false,
+      prevTab: false,
+      nextTab: false,
+    };
 
     if (this.keys.has('KeyW') || this.keys.has('ArrowDown')) pitch -= 1;
     if (this.keys.has('KeyS') || this.keys.has('ArrowUp')) pitch += 1;
@@ -421,9 +449,16 @@ export class InputManager {
       airbrake = true;
     }
 
+    // Touch controls with smooth progressive response curve
     if (Math.abs(this.touchStickX) > 0.01 || Math.abs(this.touchStickY) > 0.01) {
-      roll += this.touchStickX * this.settings.sensitivity;
-      pitch += this.touchStickY * this.settings.sensitivity;
+      const curveX = Math.sign(this.touchStickX) * Math.pow(Math.abs(this.touchStickX), 1.28);
+      const curveY = Math.sign(this.touchStickY) * Math.pow(Math.abs(this.touchStickY), 1.28);
+      roll += curveX * this.settings.sensitivity;
+      pitch += curveY * this.settings.sensitivity;
+      this.activeSource = 'touch';
+    }
+    if (Math.abs(this.touchYaw) > 0.01) {
+      yaw += this.touchYaw;
       this.activeSource = 'touch';
     }
     if (this.touchThrottleDirect !== null) {
@@ -434,6 +469,7 @@ export class InputManager {
       airbrake = true;
     }
 
+    const nowMs = performance.now();
     const gp = this.findActiveGamepad();
     if (gp) {
       const m = this.settings.mapping;
@@ -470,42 +506,88 @@ export class InputManager {
         gp.axes.length > 3
           ? this.processAxis(gp.axes[3] ?? 0, this.settings.axisCenterOffsets[3] || 0)
           : 0;
-      if (Math.abs(rightStickY) > 0.05) {
-        this.lookAccumY += rightStickY * 0.022;
+
+      if (!inMenu) {
+        if (Math.abs(gpYaw) > 0.05) {
+          this.lookAccumX += gpYaw * 0.026;
+        }
+        if (Math.abs(rightStickY) > 0.05) {
+          this.lookAccumY += rightStickY * 0.024;
+        }
       }
 
       const r2Val = gp.buttons[m.throttleUpBtn]?.value ?? 0;
       const l2Val = gp.buttons[m.throttleDownBtn]?.value ?? 0;
 
       if (
-        Math.abs(gpRoll) > 0.01 ||
-        Math.abs(gpPitch) > 0.01 ||
-        Math.abs(gpYaw) > 0.01 ||
+        Math.abs(gpRoll) > 0.02 ||
+        Math.abs(gpPitch) > 0.02 ||
+        Math.abs(gpYaw) > 0.02 ||
         r2Val > 0.05 ||
         l2Val > 0.05
       ) {
         this.activeSource = 'gamepad';
       }
 
-      roll += gpRoll;
-      pitch += gpPitch;
-      yaw += gpYaw;
-      throttleDelta += (r2Val - l2Val) * 1.15;
-
-      if (gp.buttons[m.airbrakeBtn]?.pressed) {
-        airbrake = true;
-      }
-
       const checkJustPressed = (btnIdx: number): boolean => {
         const now = Boolean(gp.buttons[btnIdx]?.pressed);
         const was = Boolean(this.prevBtnPressed[btnIdx]);
+        if (now) this.activeSource = 'gamepad';
         return now && !was;
       };
 
-      if (checkJustPressed(m.cameraBtn)) this.oneShotActions.switchCamera = true;
-      if (checkJustPressed(m.gearBtn)) this.oneShotActions.toggleGear = true;
-      if (checkJustPressed(m.resetBtn)) this.oneShotActions.resetAircraft = true;
       if (checkJustPressed(m.pauseBtn)) this.oneShotActions.togglePause = true;
+
+      if (inMenu) {
+        // FULL CONTROLLER MENU NAVIGATION (hands-free!)
+        if (checkJustPressed(12)) menuNav.up = true;
+        if (checkJustPressed(13)) menuNav.down = true;
+        if (checkJustPressed(14)) menuNav.left = true;
+        if (checkJustPressed(15)) menuNav.right = true;
+        if (checkJustPressed(m.gearBtn)) menuNav.confirm = true; // Cross / A
+        if (checkJustPressed(m.resetBtn)) menuNav.back = true;   // Circle / B
+        if (checkJustPressed(m.cameraBtn)) menuNav.prevTab = true; // L1
+        if (checkJustPressed(m.weatherBtn)) menuNav.nextTab = true; // R1
+
+        // Left stick navigation with clean repeat cooldown
+        if (nowMs > this.stickNavCooldown) {
+          if (gpPitch < -0.58) {
+            menuNav.up = true;
+            this.stickNavCooldown = nowMs + 210;
+          } else if (gpPitch > 0.58) {
+            menuNav.down = true;
+            this.stickNavCooldown = nowMs + 210;
+          } else if (gpRoll < -0.58) {
+            menuNav.left = true;
+            this.stickNavCooldown = nowMs + 210;
+          } else if (gpRoll > 0.58) {
+            menuNav.right = true;
+            this.stickNavCooldown = nowMs + 210;
+          }
+        }
+      } else {
+        // FULL IN-FLIGHT CONTROLLER COMMANDS
+        roll += gpRoll;
+        pitch += gpPitch;
+        yaw += gpYaw;
+        throttleDelta += (r2Val - l2Val) * 1.18;
+
+        if (gp.buttons[m.airbrakeBtn]?.pressed) {
+          airbrake = true;
+        }
+
+        if (checkJustPressed(m.cameraBtn)) this.oneShotActions.switchCamera = true;    // L1 -> Camera
+        if (checkJustPressed(m.weatherBtn)) this.oneShotActions.cycleWeather = true;   // R1 -> Weather
+        if (checkJustPressed(m.timeBtn)) this.oneShotActions.cycleTime = true;         // Triangle/Y -> Time
+        if (checkJustPressed(m.gearBtn)) this.oneShotActions.toggleGear = true;        // Cross/A -> Gear
+        if (checkJustPressed(m.resetBtn)) this.oneShotActions.resetAircraft = true;    // Circle/B -> Reset
+        if (checkJustPressed(m.hudBtn)) this.oneShotActions.cycleHud = true;           // Share/Select -> HUD
+        if (checkJustPressed(m.zoomBtn)) this.oneShotActions.toggleZoom = true;        // R3 -> Camera Zoom
+        if (checkJustPressed(12)) this.oneShotActions.cycleTime = true;                // D-Pad Up -> Time
+        if (checkJustPressed(13)) this.oneShotActions.cycleWeather = true;             // D-Pad Down -> Weather
+        if (checkJustPressed(14)) this.oneShotActions.cycleAircraft = true;            // D-Pad Left -> Aircraft
+        if (checkJustPressed(15)) this.oneShotActions.cycleHud = true;                 // D-Pad Right -> HUD
+      }
 
       for (let b = 0; b < gp.buttons.length; b++) {
         this.prevBtnPressed[b] = gp.buttons[b].pressed;
@@ -525,15 +607,24 @@ export class InputManager {
       airbrake,
       toggleGear: this.oneShotActions.toggleGear,
       switchCamera: this.oneShotActions.switchCamera,
+      cycleWeather: this.oneShotActions.cycleWeather,
+      cycleTime: this.oneShotActions.cycleTime,
+      cycleAircraft: this.oneShotActions.cycleAircraft,
+      toggleZoom: this.oneShotActions.toggleZoom,
       resetAircraft: this.oneShotActions.resetAircraft,
       togglePause: this.oneShotActions.togglePause,
       lookDeltaX: this.lookAccumX,
       lookDeltaY: this.lookAccumY,
       activeSource: this.activeSource,
+      menuNav,
     };
 
     this.oneShotActions.toggleGear = false;
     this.oneShotActions.switchCamera = false;
+    this.oneShotActions.cycleWeather = false;
+    this.oneShotActions.cycleTime = false;
+    this.oneShotActions.cycleAircraft = false;
+    this.oneShotActions.toggleZoom = false;
     this.oneShotActions.resetAircraft = false;
     this.oneShotActions.togglePause = false;
     this.lookAccumX = 0;

@@ -38,13 +38,19 @@ export class TerrainSystem {
   private lushCanopyMesh: THREE.InstancedMesh | null = null;
   private settlementWallsMesh: THREE.InstancedMesh | null = null;
   private settlementRoofsMesh: THREE.InstancedMesh | null = null;
+  private settlementChimneysMesh: THREE.InstancedMesh | null = null;
+  private hayBalesMesh: THREE.InstancedMesh | null = null;
 
   private windmillRotors: THREE.Group[] = [];
+  private lighthouseBeamGroup: THREE.Group | null = null;
+  private lighthouseSpot: THREE.PointLight | null = null;
   private birdFlockGroup = new THREE.Group();
+  private currentElapsed = 0;
 
   private terrainMat: THREE.MeshStandardMaterial;
   private waterMat: THREE.ShaderMaterial;
   private settlementWallMat: THREE.MeshStandardMaterial;
+  private settlementRoofMat: THREE.MeshStandardMaterial;
   private runwayLightMat: THREE.MeshBasicMaterial;
   private highwayLampMat: THREE.MeshBasicMaterial;
   private beaconLightObj: THREE.PointLight;
@@ -65,19 +71,31 @@ export class TerrainSystem {
     this.terrainMat = this.createTerrainMaterial();
     this.waterMat = this.createWaterMaterial();
 
+    const houseFacadeTex = this.createHouseFacadeTexture();
+    const roofTileTex = this.createRoofTileTexture();
+
     this.settlementWallMat = new THREE.MeshStandardMaterial({
-      color: 0xf6f1e7,
-      roughness: 0.75,
+      color: 0xffffff,
+      map: houseFacadeTex,
+      roughness: 0.78,
       metalness: 0.04,
-      emissive: new THREE.Color(0xffbe6b),
+      emissive: new THREE.Color(0xffb85c),
+      emissiveMap: houseFacadeTex,
       emissiveIntensity: 0.0,
+    });
+
+    this.settlementRoofMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: roofTileTex,
+      roughness: 0.68,
+      metalness: 0.05,
     });
 
     this.runwayLightMat = new THREE.MeshBasicMaterial({ color: 0xfff3d1 });
     this.highwayLampMat = new THREE.MeshBasicMaterial({ color: 0xffe4a8 });
 
-    // Expansive Sparkling Ocean Plane
-    const oceanGeo = new THREE.PlaneGeometry(64000, 64000, 96, 96);
+    // Expansive Sparkling Open Sea with High-Detail Animated Gerstner Waves
+    const oceanGeo = new THREE.PlaneGeometry(76000, 76000, 140, 140);
     oceanGeo.rotateX(-Math.PI / 2);
     this.oceanMesh = new THREE.Mesh(oceanGeo, this.waterMat);
     this.oceanMesh.position.y = 0.0;
@@ -164,6 +182,16 @@ export class TerrainSystem {
     return 'terrain';
   }
 
+  /**
+   * Shared Gerstner-inspired open-sea wave height used by BOTH GPU ocean shader & CPU water physics!
+   */
+  public getOceanWaveHeight(x: number, z: number, t = this.currentElapsed): number {
+    const w1 = Math.sin(x * 0.014 + z * 0.009 + t * 1.35) * 0.52;
+    const w2 = Math.sin(x * -0.022 + z * 0.018 + t * 1.75) * 0.32;
+    const w3 = Math.cos(x * 0.041 - z * 0.036 + t * 2.3) * 0.16;
+    return w1 + w2 + w3;
+  }
+
   public getWaterSurfaceHeight(x: number, z: number): number | null {
     // River channel
     if (z > -6500 && z < 2350 && Math.abs(x - this.riverCenterX(z)) < 36) {
@@ -172,11 +200,11 @@ export class TerrainSystem {
     // Alpine Mirror Lake
     const lakeDist = Math.hypot((x + 260) * 0.85, (z + 4750) * 0.65);
     if (lakeDist < 460) {
-      return 12.5;
+      return 12.5 + Math.sin(x * 0.05 + this.currentElapsed * 1.6) * 0.1;
     }
-    // Sea level ocean
-    if (this.getRawLandHeight(x, z) < 0.2) {
-      return 0.0;
+    // Open Sea with live Gerstner swells
+    if (this.getRawLandHeight(x, z) < 0.85) {
+      return this.getOceanWaveHeight(x, z, this.currentElapsed);
     }
     return null;
   }
@@ -414,9 +442,91 @@ export class TerrainSystem {
     return mat;
   }
 
+  private createHouseFacadeTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    // Warm sunlit Ghibli cream stucco plaster
+    ctx.fillStyle = '#f4ede1';
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Stone foundation plinth
+    ctx.fillStyle = '#8b8378';
+    ctx.fillRect(0, 214, 256, 42);
+
+    // Half-timbered dark oak beams
+    ctx.fillStyle = '#5a3d28';
+    ctx.fillRect(0, 0, 256, 12);
+    ctx.fillRect(0, 114, 256, 10);
+    ctx.fillRect(0, 206, 256, 10);
+    ctx.fillRect(0, 0, 12, 214);
+    ctx.fillRect(244, 0, 12, 214);
+    ctx.fillRect(122, 0, 10, 214);
+
+    // Warm lit cottage windows with shutters & muntin bars
+    const drawWindow = (wx: number, wy: number) => {
+      ctx.fillStyle = '#3d5a73'; // Shutters
+      ctx.fillRect(wx - 10, wy, 10, 46);
+      ctx.fillRect(wx + 42, wy, 10, 46);
+      ctx.fillStyle = '#ffe2a6'; // Warm glowing pane
+      ctx.fillRect(wx, wy, 42, 46);
+      ctx.strokeStyle = '#4a3221';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(wx, wy, 42, 46);
+      ctx.beginPath();
+      ctx.moveTo(wx + 21, wy);
+      ctx.lineTo(wx + 21, wy + 46);
+      ctx.moveTo(wx, wy + 23);
+      ctx.lineTo(wx + 42, wy + 23);
+      ctx.stroke();
+    };
+
+    drawWindow(36, 36);
+    drawWindow(168, 36);
+    drawWindow(36, 140);
+
+    // Arched oak cottage door
+    ctx.fillStyle = '#6b4226';
+    ctx.fillRect(166, 148, 44, 66);
+    ctx.strokeStyle = '#3e2514';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(166, 148, 44, 66);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  private createRoofTileTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#d4d4d4';
+    ctx.fillRect(0, 0, 256, 256);
+
+    for (let y = 0; y < 256; y += 24) {
+      ctx.fillStyle = y % 48 === 0 ? '#bcbcbc' : '#cfcfcf';
+      ctx.fillRect(0, y, 256, 22);
+      ctx.fillStyle = '#8f8f8f';
+      ctx.fillRect(0, y + 20, 256, 4);
+      for (let x = (y % 48 === 0 ? 0 : 12); x < 256; x += 24) {
+        ctx.fillStyle = '#9e9e9e';
+        ctx.fillRect(x, y, 2, 22);
+      }
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 2);
+    return tex;
+  }
+
   /**
-   * Detailed Sparkling Ocean, Flowing River & Mirror Lake Shader with
-   * shallow turquoise lagoons, shoreline foam waves, and Ghibli diamond sun glints!
+   * Detailed Sparkling Open Sea, Flowing River & Mirror Lake Shader with
+   * 3D Gerstner vertex waves, turquoise shallow lagoons, whitecap foam & Ghibli sun glints!
    */
   private createWaterMaterial(): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
@@ -428,15 +538,28 @@ export class TerrainSystem {
         uSkyHorizon: { value: new THREE.Color('#8ec8f6') },
         uSkyZenith: { value: new THREE.Color('#0b357a') },
         uFogColor: { value: new THREE.Color('#95cbf5') },
-        uFogDensity: { value: 0.000078 },
+        uFogDensity: { value: 0.00005 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
         varying vec2 vUv;
         varying float vViewDist;
+        varying float vWaveCrest;
+        uniform float uTime;
+
         void main() {
           vUv = uv;
           vec4 wp = modelMatrix * vec4(position, 1.0);
+
+          // Real 3D Gerstner swells on the open sea (y ~ 0) matching CPU water physics!
+          float isSea = 1.0 - smoothstep(0.5, 2.5, abs(wp.y));
+          float w1 = sin(wp.x * 0.014 + wp.z * 0.009 + uTime * 1.35) * 0.52;
+          float w2 = sin(wp.x * -0.022 + wp.z * 0.018 + uTime * 1.75) * 0.32;
+          float w3 = cos(wp.x * 0.041 - wp.z * 0.036 + uTime * 2.3) * 0.16;
+          float waveY = (w1 + w2 + w3) * isSea;
+          wp.y += waveY;
+          vWaveCrest = clamp((waveY + 0.45) * 0.72, 0.0, 1.0);
+
           vWorldPos = wp.xyz;
           vec4 mv = viewMatrix * wp;
           vViewDist = -mv.z;
@@ -448,6 +571,7 @@ export class TerrainSystem {
         varying vec3 vWorldPos;
         varying vec2 vUv;
         varying float vViewDist;
+        varying float vWaveCrest;
 
         uniform float uTime;
         uniform vec3 uSunDir;
@@ -475,48 +599,49 @@ export class TerrainSystem {
         }
 
         void main() {
-          // Layered flowing water ripples
-          vec2 uv1 = vWorldPos.xz * 0.028 + vec2(uTime * 0.42, -uTime * 0.34);
-          vec2 uv2 = vWorldPos.xz * 0.075 + vec2(-uTime * 0.31, uTime * 0.48);
-          vec2 uv3 = vWorldPos.xz * 0.19 + vec2(uTime * 0.65, uTime * 0.52);
+          vec2 uv1 = vWorldPos.xz * 0.026 + vec2(uTime * 0.46, -uTime * 0.36);
+          vec2 uv2 = vWorldPos.xz * 0.072 + vec2(-uTime * 0.34, uTime * 0.52);
+          vec2 uv3 = vWorldPos.xz * 0.19 + vec2(uTime * 0.68, uTime * 0.56);
           float w1 = wnoise(uv1);
           float w2 = wnoise(uv2);
           float w3 = wnoise(uv3);
 
           vec3 N = normalize(vec3(
-            (w1 - 0.5) * 0.16 + (w2 - 0.5) * 0.11 + (w3 - 0.5) * 0.06,
+            (w1 - 0.5) * 0.22 + (w2 - 0.5) * 0.14 + (w3 - 0.5) * 0.07,
             1.0,
-            (w2 - 0.5) * 0.16 - (w1 - 0.5) * 0.10 + (w3 - 0.5) * 0.06
+            (w2 - 0.5) * 0.22 - (w1 - 0.5) * 0.14 + (w3 - 0.5) * 0.07
           ));
           vec3 V = normalize(cameraPosition - vWorldPos);
 
-          // Vibrant Ghibli cobalt-turquoise water palette!
-          float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.6);
-          vec3 deepCobalt = vec3(0.04, 0.24, 0.48);
-          vec3 turquoiseLagoon = vec3(0.08, 0.52, 0.64);
-          vec3 reflSky = mix(uSkyZenith, uSkyHorizon, 0.68);
+          float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.4);
+          vec3 deepSapphire = vec3(0.03, 0.21, 0.46);
+          vec3 emeraldLagoon = vec3(0.07, 0.56, 0.68);
+          vec3 reflSky = mix(uSkyZenith, uSkyHorizon, 0.7);
 
-          float shallowMix = smoothstep(0.25, 0.85, w1 * 0.6 + w2 * 0.4);
-          vec3 baseWater = mix(deepCobalt, turquoiseLagoon, 0.38 + shallowMix * 0.36);
-          vec3 waterCol = mix(baseWater, reflSky, clamp(0.18 + fresnel * 0.76, 0.0, 0.90));
+          float shallowMix = smoothstep(0.22, 0.85, w1 * 0.55 + w2 * 0.45);
+          vec3 baseWater = mix(deepSapphire, emeraldLagoon, 0.34 + shallowMix * 0.34 + vWaveCrest * 0.16);
+          vec3 waterCol = mix(baseWater, reflSky, clamp(0.18 + fresnel * 0.78, 0.0, 0.90));
 
-          // Subtle riverbank / shoreline white foam ribbons
+          // Open-sea whitecap foam on lively wave crests
+          float crestFoam = smoothstep(0.76, 0.96, vWaveCrest * 0.68 + w2 * 0.48) * (1.0 - smoothstep(1400.0, 6200.0, vViewDist));
+          waterCol = mix(waterCol, vec3(0.95, 0.99, 1.0), crestFoam * 0.58);
+
+          // Riverbank shoreline foam ribbons
           float edgeDist = min(vUv.x, 1.0 - vUv.x);
           if (vWorldPos.y > 0.5 && edgeDist < 0.14) {
             float bankFoam = (1.0 - smoothstep(0.02, 0.14, edgeDist)) * smoothstep(0.42, 0.72, w2);
-            waterCol = mix(waterCol, vec3(0.94, 0.98, 1.0), bankFoam * 0.75);
+            waterCol = mix(waterCol, vec3(0.95, 0.99, 1.0), bankFoam * 0.78);
           }
 
-          // Specular Sun Path + Ghibli Dancing Diamond Sun Sparkles!
+          // Specular Sun Path + Ghibli Dancing Diamond Sun Sparkles
           vec3 H = normalize(uSunDir + V);
           float ndh = max(dot(N, H), 0.0);
-          float specRibbon = pow(ndh, 180.0) * 1.55 + pow(ndh, 28.0) * 0.20;
+          float specRibbon = pow(ndh, 190.0) * 1.65 + pow(ndh, 28.0) * 0.22;
 
-          // Crisp diamond glitter sparkles on sunlit wavelets
-          vec2 sparkleGrid = floor(vWorldPos.xz * 0.35 + vec2(uTime * 0.8, -uTime * 0.6));
+          vec2 sparkleGrid = floor(vWorldPos.xz * 0.35 + vec2(uTime * 0.85, -uTime * 0.65));
           float spRnd = whash(sparkleGrid);
-          float spFlash = smoothstep(0.965, 0.998, spRnd) * pow(ndh, 14.0) * (1.0 - smoothstep(400.0, 3800.0, vViewDist));
-          waterCol += uSunColor * (specRibbon + spFlash * 2.4);
+          float spFlash = smoothstep(0.964, 0.998, spRnd) * pow(ndh, 14.0) * (1.0 - smoothstep(450.0, 4200.0, vViewDist));
+          waterCol += uSunColor * (specRibbon + spFlash * 2.6);
 
           float fog = 1.0 - exp(-pow(vViewDist * uFogDensity, 2.0));
           waterCol = mix(waterCol, uFogColor, clamp(fog, 0.0, 1.0));
@@ -877,14 +1002,21 @@ export class TerrainSystem {
   }
 
   /**
-   * Builds Ghibli-inspired White Windmills, Sailboats on the bay/lake, and gliding white Seabirds!
+   * Builds Detailed Stone & Lattice-Sail Ghibli Windmills, Coastal Lighthouse & Harbor Pier,
+   * Cabin Sailboats on the open sea/lake, and gliding white Seabirds!
    */
   private buildWindmillsSailboatsAndBirds(): void {
-    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xfbf9f4, roughness: 0.6 });
-    const terracottaMat = new THREE.MeshStandardMaterial({ color: 0xb54b38, roughness: 0.7 });
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b4c35, roughness: 0.8 });
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xfbf8f1, roughness: 0.65 });
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0xd9d2c5, roughness: 0.85 });
+    const terracottaMat = new THREE.MeshStandardMaterial({ color: 0xb54b38, roughness: 0.68 });
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b472b, roughness: 0.82 });
+    const sailCanvasMat = new THREE.MeshStandardMaterial({
+      color: 0xfffaf0,
+      roughness: 0.72,
+      side: THREE.DoubleSide,
+    });
 
-    // 6 Scenic Farmland Windmills
+    // 8 Scenic Farmland & Hilltop Windmills with stone plinths, balconies & wooden lattice sails
     const millCoords: Array<[number, number]> = [
       [410, -280],
       [480, -920],
@@ -892,35 +1024,76 @@ export class TerrainSystem {
       [420, -2450],
       [-510, -3300],
       [350, -3950],
+      [-760, -680],
+      [620, -1820],
     ];
 
     for (const [mx, mz] of millCoords) {
       const my = this.getTerrainHeight(mx, mz);
-      if (my < 15) continue;
+      if (my < 14) continue;
 
       const mill = new THREE.Group();
       mill.position.set(mx, my, mz);
 
-      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 4.2, 18, 12), whiteMat);
-      tower.position.y = 9;
+      // Stone foundation base + tapered plaster tower
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(4.3, 4.9, 4.2, 12), stoneMat);
+      base.position.y = 2.1;
+      base.castShadow = true;
+      base.receiveShadow = true;
+      mill.add(base);
+
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 4.2, 16.5, 14), whiteMat);
+      tower.position.y = 12.2;
       tower.castShadow = true;
       tower.receiveShadow = true;
       mill.add(tower);
 
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(2.6, 3.2, 12), terracottaMat);
-      cap.position.y = 19.6;
+      // Wooden circular gallery balcony
+      const gallery = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.2, 0.55, 14), woodMat);
+      gallery.position.y = 11.4;
+      mill.add(gallery);
+
+      // Arched wooden door
+      const door = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.5, 0.4), woodMat);
+      door.position.set(0, 1.25, 4.5);
+      mill.add(door);
+
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(2.85, 3.8, 14), terracottaMat);
+      cap.position.y = 22.1;
+      cap.castShadow = true;
       mill.add(cap);
 
+      // Hub & 4 Detailed Wooden Lattice + Canvas Sails
       const rotor = new THREE.Group();
-      rotor.position.set(0, 16.5, -2.5);
-      const bladeGeo = new THREE.BoxGeometry(1.1, 11.5, 0.15);
-      bladeGeo.translate(0, 6.0, 0);
+      rotor.position.set(0, 18.6, -2.7);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.65, 1.2, 10), woodMat);
+      hub.rotation.x = Math.PI / 2;
+      rotor.add(hub);
+
+      const sparGeo = new THREE.BoxGeometry(0.28, 13.0, 0.24);
+      sparGeo.translate(0, 6.5, 0);
+      const canvasGeo = new THREE.PlaneGeometry(1.75, 10.6);
+      canvasGeo.translate(0.95, 7.2, 0.08);
+
       for (let b = 0; b < 4; b++) {
         const bWrap = new THREE.Group();
         bWrap.rotation.z = (b * Math.PI) / 2;
-        const blade = new THREE.Mesh(bladeGeo, whiteMat);
-        blade.castShadow = true;
-        bWrap.add(blade);
+
+        const spar = new THREE.Mesh(sparGeo, woodMat);
+        spar.castShadow = true;
+        bWrap.add(spar);
+
+        const sail = new THREE.Mesh(canvasGeo, sailCanvasMat);
+        sail.castShadow = true;
+        bWrap.add(sail);
+
+        // Cross-bars along the lattice frame
+        for (let r = 0; r < 5; r++) {
+          const rung = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.16, 0.16), woodMat);
+          rung.position.set(0.92, 2.8 + r * 2.2, 0.05);
+          bWrap.add(rung);
+        }
+
         rotor.add(bWrap);
       }
       mill.add(rotor);
@@ -928,7 +1101,71 @@ export class TerrainSystem {
       this.propsGroup.add(mill);
     }
 
-    // White Sailboats on the Alpine Lake & Western Ocean Bay
+    // Coastal Red-and-White Striped Lighthouse & Wooden Sea Harbor Pier overlooking the Open Sea!
+    const lhX = -2680;
+    const lhZ = -4180;
+    const lhY = Math.max(4.0, this.getTerrainHeight(lhX, lhZ));
+    const lighthouse = new THREE.Group();
+    lighthouse.position.set(lhX, lhY, lhZ);
+
+    const redMat = new THREE.MeshStandardMaterial({ color: 0xc83737, roughness: 0.55 });
+    for (let s = 0; s < 5; s++) {
+      const rBot = 4.6 - s * 0.42;
+      const rTop = 4.6 - (s + 1) * 0.42;
+      const seg = new THREE.Mesh(
+        new THREE.CylinderGeometry(rTop, rBot, 5.4, 16),
+        s % 2 === 0 ? whiteMat : redMat
+      );
+      seg.position.y = 2.7 + s * 5.4;
+      seg.castShadow = true;
+      lighthouse.add(seg);
+    }
+
+    const lanternGlass = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.3, 2.3, 4.0, 14),
+      new THREE.MeshBasicMaterial({ color: 0xfff3b8 })
+    );
+    lanternGlass.position.y = 29.0;
+    lighthouse.add(lanternGlass);
+
+    const lhCap = new THREE.Mesh(new THREE.ConeGeometry(2.8, 3.2, 14), redMat);
+    lhCap.position.y = 32.5;
+    lighthouse.add(lhCap);
+
+    // Rotating Lighthouse Volumetric Light Beam
+    this.lighthouseBeamGroup = new THREE.Group();
+    this.lighthouseBeamGroup.position.y = 29.0;
+    const beamGeo = new THREE.ConeGeometry(16, 160, 16, 1, true);
+    beamGeo.rotateX(Math.PI / 2);
+    beamGeo.translate(0, 0, 80);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0xfff0b8,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const beam1 = new THREE.Mesh(beamGeo, beamMat);
+    const beam2 = beam1.clone();
+    beam2.rotation.y = Math.PI;
+    this.lighthouseBeamGroup.add(beam1, beam2);
+    lighthouse.add(this.lighthouseBeamGroup);
+
+    this.lighthouseSpot = new THREE.PointLight(0xffe9a3, 1.5, 420);
+    this.lighthouseSpot.position.set(0, 29.5, 0);
+    lighthouse.add(this.lighthouseSpot);
+    this.propsGroup.add(lighthouse);
+
+    // Wooden Harbor Pier extending into the Turquoise Bay
+    const pier = new THREE.Group();
+    const pierDeck = new THREE.Mesh(new THREE.BoxGeometry(10, 1.2, 85), woodMat);
+    pierDeck.position.set(-2520, 2.4, -4420);
+    pierDeck.rotation.y = 0.45;
+    pierDeck.castShadow = true;
+    pier.add(pierDeck);
+    this.propsGroup.add(pier);
+
+    // Detailed Cabin Sailboats on the Alpine Lake & Open Sea
     const boatSpots: Array<[number, number, number]> = [
       [-230, 12.5, -4620],
       [-330, 12.5, -4880],
@@ -938,6 +1175,8 @@ export class TerrainSystem {
       [-3700, 0.0, -4300],
       [-4100, 0.0, -5100],
       [-2650, 0.0, -6100],
+      [-3450, 0.0, -6400],
+      [-4400, 0.0, -4650],
     ];
 
     for (let i = 0; i < boatSpots.length; i++) {
@@ -945,21 +1184,31 @@ export class TerrainSystem {
       if (by === 0.0 && this.getTerrainHeight(bx, bz) > -1.0) continue;
 
       const boat = new THREE.Group();
-      const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.1, 7.8), woodMat);
-      hull.position.y = 0.4;
+      const hull = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.3, 9.2), whiteMat);
+      hull.position.y = 0.45;
+      hull.castShadow = true;
       boat.add(hull);
+
+      const trim = new THREE.Mesh(new THREE.BoxGeometry(3.3, 0.35, 9.3), i % 2 === 0 ? redMat : woodMat);
+      trim.position.y = 0.85;
+      boat.add(trim);
+
+      const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.0, 3.2), whiteMat);
+      cabin.position.set(0, 1.35, 0.6);
+      boat.add(cabin);
+
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 11.0, 6), woodMat);
+      mast.position.set(0, 6.2, -1.6);
+      boat.add(mast);
 
       const sailShape = new THREE.Shape();
       sailShape.moveTo(0, 0);
-      sailShape.lineTo(0, 9.5);
-      sailShape.lineTo(4.6, 0.5);
+      sailShape.lineTo(0, 10.2);
+      sailShape.lineTo(5.2, 0.5);
       sailShape.closePath();
-      const sail = new THREE.Mesh(
-        new THREE.ShapeGeometry(sailShape),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
-      );
+      const sail = new THREE.Mesh(new THREE.ShapeGeometry(sailShape), sailCanvasMat);
       sail.rotation.y = Math.PI / 2;
-      sail.position.set(0, 1.0, -2.0);
+      sail.position.set(0, 1.4, -1.6);
       boat.add(sail);
 
       boat.position.set(bx, by, bz);
@@ -967,9 +1216,9 @@ export class TerrainSystem {
       this.propsGroup.add(boat);
     }
 
-    // Graceful White Seabird Flock wheeling gently over the sunlit valley!
+    // Graceful White Seabird Flock wheeling gently over the sunlit valley & sea
     const birdMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
-    for (let b = 0; b < 22; b++) {
+    for (let b = 0; b < 24; b++) {
       const bird = new THREE.Group();
       const wingGeo = new THREE.PlaneGeometry(2.4, 0.65);
       const lw = new THREE.Mesh(wingGeo, birdMat);
@@ -982,7 +1231,7 @@ export class TerrainSystem {
       rw.rotation.y = -0.25;
       bird.add(lw, rw);
 
-      const ang = (b / 22) * Math.PI * 2;
+      const ang = (b / 24) * Math.PI * 2;
       const rad = 60 + (b % 5) * 28;
       bird.position.set(Math.cos(ang) * rad, (b % 4) * 14, Math.sin(ang) * rad);
       bird.rotation.y = -ang;
@@ -1003,6 +1252,8 @@ export class TerrainSystem {
       this.lushCanopyMesh,
       this.settlementWallsMesh,
       this.settlementRoofsMesh,
+      this.settlementChimneysMesh,
+      this.hayBalesMesh,
     ]) {
       if (m) {
         this.group.remove(m);
@@ -1137,15 +1388,19 @@ export class TerrainSystem {
     const maxBuildings = this.currentQuality.buildingCount;
     const wallGeo = new THREE.BoxGeometry(1, 1, 1);
     wallGeo.translate(0, 0.5, 0);
-    const roofGeo = new THREE.ConeGeometry(0.82, 0.58, 4);
+    const roofGeo = new THREE.ConeGeometry(0.84, 0.62, 4);
     roofGeo.rotateY(Math.PI / 4);
-    roofGeo.translate(0, 1.28, 0);
+    roofGeo.translate(0, 1.3, 0);
+    const chimneyGeo = new THREE.BoxGeometry(0.14, 0.42, 0.14);
+    chimneyGeo.translate(0.24, 1.32, 0.16);
 
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72 });
+    const chimneyMat = new THREE.MeshStandardMaterial({ color: 0x7c5142, roughness: 0.88 });
     const walls = new THREE.InstancedMesh(wallGeo, this.settlementWallMat, maxBuildings);
-    const roofs = new THREE.InstancedMesh(roofGeo, roofMat, maxBuildings);
+    const roofs = new THREE.InstancedMesh(roofGeo, this.settlementRoofMat, maxBuildings);
+    const chimneys = new THREE.InstancedMesh(chimneyGeo, chimneyMat, maxBuildings);
     walls.castShadow = this.currentQuality.shadowsEnabled;
     roofs.castShadow = this.currentQuality.shadowsEnabled;
+    walls.receiveShadow = this.currentQuality.shadowsEnabled;
 
     const dummy = new THREE.Object3D();
     const roofCol = new THREE.Color();
@@ -1158,7 +1413,7 @@ export class TerrainSystem {
       const r3 = hash2(i, 903);
 
       const ang = r1 * Math.PI * 2;
-      const rad = 40 + Math.sqrt(r2) * 290;
+      const rad = 40 + Math.sqrt(r2) * 310;
       const x = hub[0] + Math.cos(ang) * rad;
       const z = hub[1] + Math.sin(ang) * rad;
 
@@ -1166,10 +1421,10 @@ export class TerrainSystem {
       if (Math.abs(x - this.highwayCenterX(z)) < 26) continue;
 
       const y = this.getTerrainHeight(x, z);
-      if (y < 14 || y > 135) continue;
+      if (y < 14 || y > 140) continue;
 
       const w = 9 + r1 * 8;
-      const h = 5.5 + r3 * 5.5;
+      const h = 5.5 + r3 * 6.0;
       const d = 9 + r2 * 9;
 
       dummy.position.set(x, y - 0.4, z);
@@ -1179,11 +1434,12 @@ export class TerrainSystem {
 
       walls.setMatrixAt(placed, dummy.matrix);
       roofs.setMatrixAt(placed, dummy.matrix);
+      chimneys.setMatrixAt(placed, dummy.matrix);
 
-      // Warm Mediterranean / Ghibli terracotta, cobalt-slate, and russet roofs!
-      if (r1 < 0.62) roofCol.setHex(0xb84a39);
-      else if (r1 < 0.85) roofCol.setHex(0x3f5b78);
-      else roofCol.setHex(0x7a5238);
+      // Warm Mediterranean / Ghibli terracotta, slate-blue, and ochre roofs
+      if (r1 < 0.58) roofCol.setHex(0xc44d38);
+      else if (r1 < 0.82) roofCol.setHex(0x3f6185);
+      else roofCol.setHex(0x8c5c38);
       roofs.setColorAt(placed, roofCol);
 
       placed++;
@@ -1191,13 +1447,46 @@ export class TerrainSystem {
 
     walls.count = placed;
     roofs.count = placed;
+    chimneys.count = placed;
     walls.instanceMatrix.needsUpdate = true;
     roofs.instanceMatrix.needsUpdate = true;
+    chimneys.instanceMatrix.needsUpdate = true;
     if (roofs.instanceColor) roofs.instanceColor.needsUpdate = true;
 
     this.settlementWallsMesh = walls;
     this.settlementRoofsMesh = roofs;
-    this.group.add(walls, roofs);
+    this.settlementChimneysMesh = chimneys;
+    this.group.add(walls, roofs, chimneys);
+
+    // Golden Rolled Hay Bales scattered across sunlit valley farmland fields!
+    const hayMax = Math.floor(maxBuildings * 1.4);
+    const hayGeo = new THREE.CylinderGeometry(1.4, 1.4, 2.2, 10);
+    hayGeo.rotateZ(Math.PI / 2);
+    const hayMat = new THREE.MeshStandardMaterial({ color: 0xd9b35b, roughness: 0.92 });
+    const hayInst = new THREE.InstancedMesh(hayGeo, hayMat, hayMax);
+    let hayPlaced = 0;
+
+    for (let i = 0; i < hayMax * 3 && hayPlaced < hayMax; i++) {
+      const r1 = hash2(i, 951);
+      const r2 = hash2(i, 952);
+      const x = (r1 - 0.5) * 2400;
+      const z = -4200 + r2 * 5200;
+      if (Math.abs(x - this.riverCenterX(z)) < 70) continue;
+      if (Math.abs(x - this.highwayCenterX(z)) < 38) continue;
+      if (Math.abs(x) < 220 && z > 900) continue;
+      const y = this.getTerrainHeight(x, z);
+      if (y < 16 || y > 72) continue;
+
+      dummy.position.set(x, y + 1.0, z);
+      dummy.rotation.set(0, r1 * Math.PI * 2, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      hayInst.setMatrixAt(hayPlaced++, dummy.matrix);
+    }
+    hayInst.count = hayPlaced;
+    hayInst.instanceMatrix.needsUpdate = true;
+    this.hayBalesMesh = hayInst;
+    this.group.add(hayInst);
   }
 
   public applyPreset(preset: AtmospherePreset, sunDir: THREE.Vector3): void {
@@ -1211,8 +1500,11 @@ export class TerrainSystem {
 
     this.shaderUniforms.uNightLights.value = preset.nightLights;
     this.shaderUniforms.uShadowTint.value.copy(preset.cloudShadowColor);
-    this.settlementWallMat.emissiveIntensity = preset.nightLights * 0.34;
+    this.settlementWallMat.emissiveIntensity = preset.nightLights * 0.45;
     this.beaconLightObj.intensity = 0.6 + preset.nightLights * 3.5;
+    if (this.lighthouseSpot) {
+      this.lighthouseSpot.intensity = 1.2 + preset.nightLights * 6.5;
+    }
     this.runwayLightMat.color.setHex(preset.nightLights > 0.3 ? 0xffe6a3 : 0xdde6ee);
     this.highwayLampMat.color.setHex(preset.nightLights > 0.25 ? 0xffd27d : 0xd8dee6);
   }
@@ -1229,15 +1521,21 @@ export class TerrainSystem {
   }
 
   public update(elapsed: number, focusPos: THREE.Vector3): void {
+    this.currentElapsed = elapsed;
     this.shaderUniforms.uTime.value = elapsed;
-    this.shaderUniforms.uCloudDrift.value.set(elapsed * 5.5, -elapsed * 2.4);
+    this.shaderUniforms.uCloudDrift.value.set(elapsed * 5.2, -elapsed * 2.2);
 
     this.oceanMesh.position.x = Math.round(focusPos.x / 500) * 500;
     this.oceanMesh.position.z = Math.round(focusPos.z / 500) * 500;
 
     // Spin farmland windmills peacefully
     for (let i = 0; i < this.windmillRotors.length; i++) {
-      this.windmillRotors[i].rotation.z = elapsed * 0.55 + i;
+      this.windmillRotors[i].rotation.z = elapsed * 0.58 + i;
+    }
+
+    // Rotate coastal lighthouse beacon beam
+    if (this.lighthouseBeamGroup) {
+      this.lighthouseBeamGroup.rotation.y = elapsed * 0.65;
     }
 
     // Wheel white seabird flock lazily through the sunlit valley air
