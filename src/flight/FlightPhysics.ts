@@ -27,9 +27,9 @@ export class FlightPhysics {
   public readonly telemetry: FlightTelemetry;
 
   private options: FlightAssistOptions = {
-    flightMode: 'relaxed',
+    flightMode: 'simulation',
     altitudeAssist: false,
-    collisionDamage: false,
+    collisionDamage: true,
     stallSimulation: true,
   };
 
@@ -41,6 +41,12 @@ export class FlightPhysics {
   private crashCooldown = 0;
   private wasOnGround = false;
   private scrapeCooldown = 0;
+  // v3 realism state
+  private angVelPitch = 0;
+  private angVelRoll = 0;
+  private angVelYaw = 0;
+  private gearCompression = 0;
+  private crashSliding = false;
 
   private readonly tmpForward = new THREE.Vector3();
   private readonly tmpRight = new THREE.Vector3();
@@ -48,6 +54,12 @@ export class FlightPhysics {
   private readonly tmpVelDir = new THREE.Vector3();
   private readonly tmpForce = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+  private readonly tmpQuat2 = new THREE.Quaternion();
+  private readonly tmpQuat3 = new THREE.Quaternion();
+  private readonly tmpVec = new THREE.Vector3();
+  private readonly axisX = new THREE.Vector3(1, 0, 0);
+  private readonly axisY = new THREE.Vector3(0, 1, 0);
+  private readonly axisZ = new THREE.Vector3(0, 0, 1);
   private readonly tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
   private readonly worldUp = new THREE.Vector3(0, 1, 0);
 
@@ -83,6 +95,7 @@ export class FlightPhysics {
       aileronInput: 0,
       elevatorInput: 0,
       rudderInput: 0,
+      gearCompression: 0,
       haptics: {
         touchdownIntensity: 0,
         scrapeIntensity: 0,
@@ -155,6 +168,10 @@ export class FlightPhysics {
     this.smoothedPitchIn = 0;
     this.smoothedRollIn = 0;
     this.smoothedYawIn = 0;
+    this.angVelPitch = 0; this.angVelRoll = 0; this.angVelYaw = 0;
+    this.gearCompression = preset.onGround ? 0.08 : 0;
+    t.gearCompression = this.gearCompression;
+    this.crashSliding = false;
     this.crashCooldown = 0;
   }
 
@@ -182,6 +199,20 @@ export class FlightPhysics {
 
     if (t.crashed) {
       this.crashCooldown -= dt;
+      // v3: slide to rest with friction over ~1-2s instead of instant freeze
+      if (this.crashSliding) {
+        const surfY = getTerrainHeight(t.position.x, t.position.z);
+        const wY = getWaterSurfaceHeight(t.position.x, t.position.z);
+        const effY = wY !== null ? Math.max(surfY, wY) : Math.max(0, surfY);
+        const fric = 2.2;
+        t.velocity.multiplyScalar(Math.max(0, 1 - fric * dt));
+        if (t.velocity.y < 0) t.velocity.y = 0;
+        t.position.addScaledVector(t.velocity, dt);
+        const minY = effY + (t.gearDown ? 1.18 : 0.62) - Math.min(this.gearCompression, 0.25);
+        if (t.position.y < minY) t.position.y = minY;
+        t.airspeedMs = t.velocity.length(); t.airspeedKts = t.airspeedMs * KTS_PER_MS;
+        if (t.velocity.lengthSq() < 0.25) { t.velocity.set(0,0,0); this.crashSliding = false; }
+      }
       if (inputs.resetAircraft || this.crashCooldown <= 0) {
         this.recoverInAir();
       }
@@ -207,10 +238,18 @@ export class FlightPhysics {
     const targetRpm = clamp(0.18 + t.throttle * 0.82 + (t.airspeedMs / 95) * 0.08, 0.15, 1.05);
     t.rpmNormalized += (targetRpm - t.rpmNormalized) * Math.min(1, dt * 3.5);
 
-    const smoothRate = isRelaxed ? 7.8 : 11.5;
-    this.smoothedPitchIn += (inputs.pitch - this.smoothedPitchIn) * Math.min(1, dt * smoothRate);
-    this.smoothedRollIn += (inputs.roll - this.smoothedRollIn) * Math.min(1, dt * smoothRate);
-    this.smoothedYawIn += (inputs.yaw - this.smoothedYawIn) * Math.min(1, dt * smoothRate);
+    // v3 actuator lag + rate limit: surfaces lag the stick (~120-180ms sim, faster relaxed)
+    const lagRate = isRelaxed ? 9.0 : 5.5;
+    const maxRate = isRelaxed ? 5.0 : 3.4; // deflection units / sec
+    const actuate = (cur: number, target: number) => {
+      let step = (target - cur) * Math.min(1, dt * lagRate);
+      const lim = maxRate * dt;
+      step = clamp(step, -lim, lim);
+      return cur + step;
+    };
+    this.smoothedPitchIn = actuate(this.smoothedPitchIn, inputs.pitch);
+    this.smoothedRollIn = actuate(this.smoothedRollIn, inputs.roll);
+    this.smoothedYawIn = actuate(this.smoothedYawIn, inputs.yaw);
 
     t.aileronInput = this.smoothedRollIn;
     t.elevatorInput = this.smoothedPitchIn;
@@ -228,17 +267,25 @@ export class FlightPhysics {
     const maxMs = spec.maxSpeedKts * MS_PER_KTS;
     const speedAuthority = clamp(t.airspeedMs / (stallMs * 1.15), 0.24, 1.25);
 
-    let pitchRateCmd = this.smoothedPitchIn * spec.pitchRate * speedAuthority;
-    let rollRateCmd = -this.smoothedRollIn * spec.rollRate * speedAuthority;
-    let yawRateCmd = -this.smoothedYawIn * spec.yawRate * speedAuthority;
+    // prop wash: at low speed / high throttle the prop blast restores some authority
+    const propWash = t.throttle * clamp(1 - t.airspeedMs / Math.max(stallMs * 1.25, 1), 0, 1) * 0.38;
+    const authority = clamp(speedAuthority + propWash, 0.24, 1.35);
+    let pitchRateCmd = this.smoothedPitchIn * spec.pitchRate * authority;
+    let rollRateCmd = -this.smoothedRollIn * spec.rollRate * authority;
+    let yawRateCmd = -this.smoothedYawIn * spec.yawRate * authority;
+    if (!isRelaxed && !t.onGround) {
+      yawRateCmd += this.smoothedRollIn * 0.16 * authority; // adverse yaw
+      rollRateCmd += t.throttle * 0.018; // prop torque
+    }
 
     if (!t.onGround) {
       const bankTurnRate = -Math.sin(currentRollRad) * (GRAVITY / Math.max(t.airspeedMs, 18)) * 0.92;
       const worldTurnQuat = this.tmpQuat.setFromAxisAngle(this.worldUp, bankTurnRate * dt);
       t.quaternion.premultiply(worldTurnQuat);
     } else {
+      const steerFade = clamp(t.airspeedMs / 10, 0, 1) * clamp(1.18 - t.airspeedMs / 55, 0.32, 1);
       const groundSteer =
-        (-this.smoothedYawIn - this.smoothedRollIn * 0.65) * 0.96 * clamp(t.airspeedMs / 10, 0, 1);
+        (-this.smoothedYawIn - this.smoothedRollIn * 0.65) * 0.96 * steerFade;
       const steerQuat = this.tmpQuat.setFromAxisAngle(this.worldUp, groundSteer * dt);
       t.quaternion.premultiply(steerQuat);
       rollRateCmd *= 0.08;
@@ -274,16 +321,18 @@ export class FlightPhysics {
       rollRateCmd += noise2D(this.turbulenceClock * 3.5, 4.2) * stallDepth * (isRelaxed ? 0.08 : 0.32);
     }
 
-    const qPitch = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(1, 0, 0),
-      (pitchRateCmd + turbPitch) * dt
-    );
-    const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawRateCmd * dt);
-    const qRoll = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 0, 1),
-      (rollRateCmd + turbRoll) * dt
-    );
-    t.quaternion.multiply(qYaw).multiply(qPitch).multiply(qRoll).normalize();
+    // v3 angular inertia/damping: angular velocity eases toward commanded rate
+    const angBlend = Math.min(1, dt * (isRelaxed ? 10 : 6.0));
+    this.angVelPitch += (pitchRateCmd - this.angVelPitch) * angBlend;
+    this.angVelRoll += (rollRateCmd - this.angVelRoll) * angBlend;
+    this.angVelYaw += (yawRateCmd - this.angVelYaw) * angBlend;
+    const qPitch = this.tmpQuat.setFromAxisAngle(this.axisX, (this.angVelPitch + turbPitch) * dt);
+    // reuse separate temps (tmpQuat is overwritten above, so use dedicated quats in sequence)
+    t.quaternion.multiply(qPitch);
+    const qYaw = this.tmpQuat2.setFromAxisAngle(this.axisY, this.angVelYaw * dt);
+    t.quaternion.multiply(qYaw);
+    const qRoll = this.tmpQuat3.setFromAxisAngle(this.axisZ, (this.angVelRoll + turbRoll) * dt);
+    t.quaternion.multiply(qRoll).normalize();
 
     this.tmpForward.set(0, 0, -1).applyQuaternion(t.quaternion).normalize();
     this.tmpRight.set(1, 0, 0).applyQuaternion(t.quaternion).normalize();
@@ -315,7 +364,14 @@ export class FlightPhysics {
       cl *= isRelaxed ? 0.72 : 0.48;
     }
 
-    let liftAccel = cl * GRAVITY * clamp(speed / (stallMs * 1.18), 0, 1.38);
+    // v3 ground effect: extra lift / less induced drag within ~one wingspan of surface
+    const preGroundY = getTerrainHeight(t.position.x, t.position.z);
+    const preWaterY = getWaterSurfaceHeight(t.position.x, t.position.z);
+    const preSurfY = preWaterY !== null ? Math.max(preGroundY, preWaterY) : Math.max(0, preGroundY);
+    const hAboveSurf = t.position.y - preSurfY;
+    const geFactor = !t.onGround && hAboveSurf > 0 && hAboveSurf < spec.wingSpan
+      ? 1 + 0.20 * (1 - hAboveSurf / spec.wingSpan) : 1;
+    let liftAccel = cl * GRAVITY * clamp(speed / (stallMs * 1.18), 0, 1.38) * geFactor;
     if (isRelaxed && !t.onGround && t.throttle > 0.35) {
       liftAccel = Math.max(liftAccel, GRAVITY * clamp(speed / (stallMs * 1.02), 0, 1.04) * this.tmpUp.y);
     }
@@ -340,7 +396,7 @@ export class FlightPhysics {
     // Wide open world boundary (includes expanded open sea!)
     const distSq = t.position.x * t.position.x + (t.position.z + 1500) * (t.position.z + 1500);
     if (distSq > 13500 * 13500) {
-      const pull = new THREE.Vector3(-t.position.x, 0, -(t.position.z + 1500)).normalize();
+      const pull = this.tmpVec.set(-t.position.x, 0, -(t.position.z + 1500)).normalize();
       t.position.addScaledVector(pull, dt * 45);
     }
 
@@ -374,12 +430,21 @@ export class FlightPhysics {
       const hardImpact = impactVertSpeed > (isRelaxed ? 13.0 : 7.5);
       const gearUpStrike = !t.gearDown && !isRelaxed && !overWater;
 
-      if (this.options.collisionDamage && (excessiveBank || hardImpact || gearUpStrike)) {
+      const bellyScrape = gearUpStrike && !hardImpact && !excessiveBank && !overWater;
+      if (this.options.collisionDamage && (excessiveBank || hardImpact || (gearUpStrike && !bellyScrape))) {
         t.crashed = true;
         t.haptics.scrapeIntensity = 1.0;
-        this.crashCooldown = 2.2;
-        t.velocity.set(0, 0, 0);
+        this.crashCooldown = 2.6;
+        // v3: keep momentum and slide to rest
+        t.velocity.y = 0;
+        t.velocity.multiplyScalar(0.55);
+        this.crashSliding = true;
+        this.gearCompression = 0.25;
         return;
+      }
+      if (bellyScrape) {
+        t.haptics.scrapeIntensity = clamp(0.6 + impactVertSpeed * 0.08, 0.6, 1.0);
+        t.velocity.multiplyScalar(Math.max(0, 1 - dt * 3.2)); // rapid scrape decel
       }
 
       if (overWater) {
@@ -393,8 +458,12 @@ export class FlightPhysics {
         t.velocity.y += (buoyancyAccel - t.velocity.y * 3.8) * dt;
         t.position.y = Math.max(effectiveSurfaceY + 0.48, t.position.y);
 
+        // v3 slow-speed draft: below ~8 m/s the hull sinks a bit and drag rises
+        if (t.airspeedMs < 8) {
+          t.position.y = Math.max(effectiveSurfaceY + 0.30, t.position.y - dt * 0.35);
+        }
         // Realistic water drag slows aircraft gently while skimming
-        const waterDrag = 0.42 + (t.airbrakeActive ? 0.95 : 0.0) + (t.gearDown ? 0.25 : 0.0);
+        const waterDrag = 0.42 + (t.airbrakeActive ? 0.95 : 0.0) + (t.gearDown ? 0.25 : 0.0) + (t.airspeedMs < 8 ? 0.85 : 0);
         t.velocity.x *= Math.max(0, 1 - waterDrag * dt);
         t.velocity.z *= Math.max(0, 1 - waterDrag * dt);
 
@@ -436,14 +505,41 @@ export class FlightPhysics {
         this.tmpEuler.x = clamp(this.tmpEuler.x, -0.05, 0.24);
         t.quaternion.setFromEuler(this.tmpEuler);
 
-        const rollFriction = isPaved
-          ? t.throttle < 0.1 ? 0.55 : 0.045
-          : t.throttle < 0.1 ? 1.15 : 0.24;
+        const braking = t.airbrakeActive || t.throttle < 0.1;
+        const rollFriction = surfKind === 'runway'
+          ? braking ? 0.55 : 0.045
+          : surfKind === 'highway'
+          ? braking ? 0.72 : 0.08
+          : braking ? 1.15 : 0.24;
         t.velocity.multiplyScalar(Math.max(0, 1 - dt * rollFriction));
+        // v3 suspension: rest compression on ground, bounce on touchdown
+        if (!this.wasOnGround && impactVertSpeed > 0.5) {
+          this.gearCompression = clamp(0.08 + impactVertSpeed * 0.028, 0.08, 0.25);
+          if (impactVertSpeed < 6) t.velocity.y = clamp(impactVertSpeed * 0.10, 0, 0.9);
+        }
       }
     } else {
       t.onGround = false;
       t.surfaceType = 'air';
+    }
+
+    // v3 suspension decay toward resting compression / zero in air
+    const targetComp = t.onGround ? 0.08 : 0;
+    this.gearCompression += (targetComp - this.gearCompression) * Math.min(1, dt * 7);
+    t.gearCompression = clamp(this.gearCompression, 0, 0.25);
+
+    // v3 HARD ground-penetration clamp (landing sink bug fix) for all surfaces
+    {
+      const gc = t.gearDown ? 1.18 : 0.62;
+      const isWaterSurf = surfKind === 'water' && waterY !== null;
+      const minDraft = isWaterSurf ? 0.30 : 0;
+      const hardMinY = isWaterSurf
+        ? effectiveSurfaceY + minDraft
+        : effectiveSurfaceY + gc - Math.min(this.gearCompression, 0.25);
+      if (t.position.y < hardMinY) {
+        t.position.y = hardMinY;
+        if (t.velocity.y < 0) t.velocity.y = this.gearCompression > 0.12 ? Math.min(0.6, -t.velocity.y * 0.08) : 0;
+      }
     }
 
     this.wasOnGround = t.onGround;

@@ -19,6 +19,33 @@ export interface GameplayStatus {
   waypointName: string;
   waypointDistanceM: number;
   landingSummary: string | null;
+  missionId?: string;
+  missionTitle?: string;
+  missionObjective?: string;
+  missionIndex?: number;
+  missionTotal?: number;
+  missionCompleted?: boolean;
+}
+
+export interface MissionDef {
+  id: string; title: string; objective: string;
+  kind: 'takeoff' | 'waypoint' | 'skim' | 'landing' | 'circuit';
+  waypointIndex?: number; // index into scenic waypoints
+}
+export const MISSIONS: MissionDef[] = [
+  { id: 'first_takeoff', title: 'First Takeoff', objective: 'Take off from Runway 36 and climb above 120 m AGL', kind: 'takeoff' },
+  { id: 'ring_climb', title: 'Climb Through the Ring', objective: 'Fly through the Grand Cloud Canyon ring', kind: 'waypoint', waypointIndex: 0 },
+  { id: 'valley_cruise', title: 'Valley Cruise', objective: 'Reach the Emerald Patchwork Valley waypoint', kind: 'waypoint', waypointIndex: 1 },
+  { id: 'lake_skim', title: 'Lake Skim', objective: 'Skim low over Sapphire Mirror Lake (under 25 m above water)', kind: 'skim', waypointIndex: 3 },
+  { id: 'ocean_tour', title: 'Ocean Tour', objective: 'Reach the Azure Island Bay over the open ocean', kind: 'waypoint', waypointIndex: 4 },
+  { id: 'full_circuit', title: 'Full Circuit Landing', objective: 'Take off, fly the valley circuit and land smoothly on Runway 36 (<350 fpm)', kind: 'circuit', waypointIndex: 6 },
+];
+const MISSION_PROGRESS_KEY = 'dream_flight_missions_v1';
+export function loadMissionProgress(): number {
+  try { return Number(localStorage.getItem(MISSION_PROGRESS_KEY) || 0) || 0; } catch { return 0; }
+}
+export function saveMissionProgress(n: number): void {
+  try { if (n > loadMissionProgress()) localStorage.setItem(MISSION_PROGRESS_KEY, String(n)); } catch {}
 }
 
 export const GAMEPLAY_MODE_INFO: Record<
@@ -41,6 +68,10 @@ export const GAMEPLAY_MODE_INFO: Record<
     title: 'Landing Approach',
     subtitle: 'Line up on scenic final approach to Dream Valley Runway 36 facing the Grand Cloud Canyon',
   },
+  missions: {
+    title: 'Missions',
+    subtitle: '6-mission campaign: first takeoff, rings, valley cruise, lake skim, ocean tour & a full circuit landing',
+  },
 };
 
 export class GameplayManager {
@@ -61,6 +92,10 @@ export class GameplayManager {
   private landingSummary: string | null = null;
   private prevOnGround = false;
   private lastAirborneVsFpm = 0;
+  private missionIndex = 0;
+  private missionStage = 0; // circuit: 0 needs takeoff, 1 needs waypoint, 2 needs landing
+  private missionDone = false;
+  private missionWasAirborne = false;
 
   constructor(scene: THREE.Scene) {
     this.ringMat = new THREE.MeshBasicMaterial({
@@ -158,12 +193,14 @@ export class GameplayManager {
     specialSpawn: 'none' | 'runway' | 'highway' = 'none'
   ): void {
     this.mode = mode;
+    this.missionIndex = Math.min(loadMissionProgress(), MISSIONS.length - 1);
+    this.missionStage = 0; this.missionDone = false; this.missionWasAirborne = false;
     this.landingEvaluated = false;
     this.landingSummary = null;
     this.prevOnGround = specialSpawn === 'runway';
     this.activeWpIndex = 0;
 
-    this.ringGroup.visible = mode === 'scenic_journey';
+    this.ringGroup.visible = mode === 'scenic_journey' || mode === 'missions';
     this.approachRingsGroup.visible = mode === 'landing_challenge' && specialSpawn !== 'highway';
 
     let spawn: SpawnPreset;
@@ -191,6 +228,16 @@ export class GameplayManager {
         onGround: false,
       };
       this.showBanner('Scenic Valley Highway Approach', 'Align with the yellow highway centerline below and touch down gently!');
+    } else if (mode === 'missions') {
+      const m = MISSIONS[this.missionIndex];
+      if (m.kind === 'takeoff' || m.kind === 'circuit') {
+        spawn = { position: new THREE.Vector3(0, 29.18, 2020), headingDeg: 0, pitchDeg: 0, airspeedKts: 0, throttle: 0, gearDown: true, onGround: true };
+        this.prevOnGround = true;
+      } else {
+        spawn = { position: new THREE.Vector3(0, 545, 560), headingDeg: 0, pitchDeg: 1.2, airspeedKts: 112, throttle: 0.68, gearDown: false, onGround: false };
+      }
+      if (m.waypointIndex !== undefined) { this.activeWpIndex = m.waypointIndex; this.syncWaypointRing(); this.ringGroup.visible = true; } else { this.ringGroup.visible = false; }
+      this.showBanner(`Mission ${this.missionIndex + 1}: ${m.title}`, m.objective, 6.5);
     } else if (mode === 'scenic_journey') {
       spawn = {
         position: new THREE.Vector3(0, 545, 560),
@@ -226,17 +273,18 @@ export class GameplayManager {
       };
       this.showBanner('Final Approach — Runway 36', 'Keep gear down, ~65–75 kts, and flare gently over the threshold');
     } else {
-      // Signature Opening & Free Flight Scene (homage to ref.mp4!)
+      // v3: Free Flight starts on the ground on Runway 36 — take off like a real pilot
       spawn = {
-        position: new THREE.Vector3(-12, 540, 480),
-        headingDeg: 356,
-        pitchDeg: 1.5,
-        airspeedKts: 112,
-        throttle: 0.68,
+        position: new THREE.Vector3(0, 29.18, 2020),
+        headingDeg: 0,
+        pitchDeg: 0,
+        airspeedKts: 0,
+        throttle: 0.0,
         gearDown: true,
-        onGround: false,
+        onGround: true,
       };
-      this.showBanner('Dream Flight', 'Peaceful skies ahead — fly anywhere at your own pace');
+      this.prevOnGround = true;
+      this.showBanner('Dream Flight — Runway 36', 'Throttle up, rotate at ~55 kts, and climb into the Cloud Canyon');
     }
 
     physics.spawn(spawn);
@@ -324,6 +372,43 @@ export class GameplayManager {
       wpDist = telemetry.position.distanceTo(airport.thresholdSouth);
     }
 
+    // v3 Missions objective tracking
+    let missionFields: Partial<GameplayStatus> = {};
+    if (this.mode === 'missions') {
+      const m = MISSIONS[this.missionIndex];
+      if (!telemetry.onGround && telemetry.aglM > 20) this.missionWasAirborne = true;
+      let complete = false;
+      if (m.kind === 'takeoff') {
+        complete = this.missionWasAirborne && telemetry.aglM > 120;
+      } else if (m.kind === 'waypoint' || m.kind === 'skim') {
+        const wp = this.waypoints[m.waypointIndex ?? 0];
+        wpName = wp.name; wpDist = telemetry.position.distanceTo(wp.position);
+        const pulse = 1.0 + Math.sin(elapsed * 2.4) * 0.05;
+        this.ringGroup.scale.setScalar(pulse);
+        if (m.kind === 'waypoint') complete = wpDist < wp.radius;
+        else complete = wpDist < wp.radius * 1.6 && telemetry.aglM < 25 && telemetry.aglM > 0;
+      } else if (m.kind === 'circuit') {
+        const wp = this.waypoints[m.waypointIndex ?? 6];
+        if (this.missionStage === 0 && this.missionWasAirborne && telemetry.aglM > 60) this.missionStage = 1;
+        else if (this.missionStage === 1) {
+          wpName = wp.name; wpDist = telemetry.position.distanceTo(wp.position);
+          if (wpDist < wp.radius) this.missionStage = 2;
+        } else if (this.missionStage === 2 && telemetry.onGround && this.prevOnGround === false) {
+          // landing event handled below via landingSummary check in next frames
+        }
+        if (this.missionStage === 2 && telemetry.onGround && telemetry.surfaceType === 'runway' && this.landingSummary) {
+          complete = !this.landingSummary.includes('Safe Runway Arrival') || Math.abs(this.lastAirborneVsFpm) < 350;
+        }
+      }
+      if (complete && !this.missionDone) {
+        this.missionDone = true;
+        saveMissionProgress(this.missionIndex + 1);
+        this.showBanner(`Mission Complete: ${m.title}`, this.missionIndex + 1 < MISSIONS.length ? `Next: ${MISSIONS[this.missionIndex + 1].title} — restart Missions to continue` : 'Campaign complete — congratulations, pilot!', 7);
+        onWaypointReached?.();
+      }
+      missionFields = { missionId: m.id, missionTitle: m.title, missionObjective: m.objective, missionIndex: this.missionIndex + 1, missionTotal: MISSIONS.length, missionCompleted: this.missionDone };
+    }
+
     this.prevOnGround = telemetry.onGround;
 
     return {
@@ -335,6 +420,7 @@ export class GameplayManager {
       waypointName: wpName,
       waypointDistanceM: Math.round(wpDist),
       landingSummary: this.landingSummary,
+      ...missionFields,
     };
   }
 }

@@ -38,7 +38,8 @@ export type GameplayModeId =
   | 'free_flight'
   | 'scenic_journey'
   | 'cloud_exploration'
-  | 'landing_challenge';
+  | 'landing_challenge'
+  | 'missions';
 
 export type CameraModeId = 'chase' | 'cockpit' | 'cinematic' | 'freelook';
 
@@ -218,5 +219,7 @@ export interface FlightTelemetry {
   aileronInput: number;
   elevatorInput: number;
   rudderInput: number;
+  /** v3: gear suspension compression in metres, 0..0.25 */
+  gearCompression?: number;
   haptics: HapticFeedbackEvents;
 }

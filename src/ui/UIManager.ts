@@ -46,6 +46,8 @@ export interface UIHooks {
   getCurrentHour: () => number;
   getActiveGraphics: () => GraphicsPresetId;
   getCurrentFps: () => number;
+  onPersistSettings?: () => void;
+  onResetSavedSettings?: () => void;
 }
 
 export class UIManager {
@@ -136,8 +138,12 @@ export class UIManager {
     window.setTimeout(() => el.remove(), 2900);
   }
 
+  public getHudMode(): HudModeId { return this.hudMode; }
+  public setHudMode(m: HudModeId): void { this.hudMode = m; this.applyHudModeLayout(); }
+
   public cycleHudMode(): void {
     this.hudMode = this.hudMode === 'minimal' ? 'immersive' : 'minimal';
+    this.hooks.onPersistSettings?.();
     this.applyHudModeLayout();
     this.showToast(
       this.hudMode === 'minimal' ? 'Minimal HUD Active' : 'Immersive Pure View',
@@ -347,15 +353,15 @@ export class UIManager {
           </div>
 
           <div class="hud-actions-inline" id="hud-actions-inline">
-            <button class="hud-icon-btn" id="btn-hud-cam" title="Switch Camera (L1)">${iconSvg('camera', 14)}</button>
-            <button class="hud-icon-btn" id="btn-hud-weather" title="Cycle Weather (R1)">${iconSvg('cloud-sun', 14)}</button>
-            <button class="hud-icon-btn" id="btn-hud-gear" title="Landing Gear (Cross/A)">${iconSvg('gear', 14)}<span id="hud-gear-txt">DN</span></button>
-            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-sky" title="Cycle Time of Day (Triangle/Y)">${iconSvg('clock', 14)}</button>
-            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-zoom" title="Camera Distance (R3)">${iconSvg('zoom', 14)}</button>
-            <button class="hud-icon-btn" id="btn-hud-mode" title="Toggle Pure View">${iconSvg('eye', 14)}</button>
-            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-reset" title="Stabilize Plane">${iconSvg('reset', 14)}</button>
+            <button class="hud-icon-btn" id="btn-hud-cam" title="Switch Camera">${iconSvg('camera', 14)}<span class="control-hint" data-hint-action="camera">C</span></button>
+            <button class="hud-icon-btn" id="btn-hud-weather" title="Cycle Weather">${iconSvg('cloud-sun', 14)}<span class="control-hint" data-hint-action="weather">V</span></button>
+            <button class="hud-icon-btn" id="btn-hud-gear" title="Landing Gear">${iconSvg('gear', 14)}<span id="hud-gear-txt">DN</span><span class="control-hint" data-hint-action="gear">G</span></button>
+            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-sky" title="Cycle Time of Day">${iconSvg('clock', 14)}<span class="control-hint" data-hint-action="time">T</span></button>
+            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-zoom" title="Camera Distance">${iconSvg('zoom', 14)}<span class="control-hint" data-hint-action="zoom">Z</span></button>
+            <button class="hud-icon-btn" id="btn-hud-mode" title="Toggle Pure View">${iconSvg('eye', 14)}<span class="control-hint" data-hint-action="hud">H</span></button>
+            <button class="hud-icon-btn hud-hide-narrow" id="btn-hud-reset" title="Stabilize Plane">${iconSvg('reset', 14)}<span class="control-hint" data-hint-action="reset">⌫</span></button>
             <button class="hud-icon-btn highlight-fs" id="btn-hud-fs" title="Full Screen">${iconSvg('fullscreen', 14)}</button>
-            <button class="hud-icon-btn" id="btn-hud-pause" title="Menu">${iconSvg('menu', 14)}</button>
+            <button class="hud-icon-btn" id="btn-hud-pause" title="Menu">${iconSvg('menu', 14)}<span class="control-hint" data-hint-action="pause">P</span></button>
           </div>
         </div>
 
@@ -380,9 +386,9 @@ export class UIManager {
 
           <div class="touch-right-cluster">
             <div class="touch-action-col">
-              <button class="touch-circle-btn" id="btn-touch-cam" title="Camera">${iconSvg('camera', 15)}</button>
-              <button class="touch-circle-btn" id="btn-touch-weather" title="Weather">${iconSvg('cloud-sun', 15)}</button>
-              <button class="touch-airbrake-btn" id="btn-touch-brake">BRK</button>
+              <button class="touch-circle-btn" id="btn-touch-cam" title="Camera">${iconSvg('camera', 15)}<span class="control-hint" data-hint-action="camera">C</span></button>
+              <button class="touch-circle-btn" id="btn-touch-weather" title="Weather">${iconSvg('cloud-sun', 15)}<span class="control-hint" data-hint-action="weather">V</span></button>
+              <button class="touch-airbrake-btn" id="btn-touch-brake">BRK<span class="control-hint" data-hint-action="airbrake">Spc</span></button>
             </div>
             <div class="touch-throttle-track" id="thr-track">
               <div class="touch-throttle-fill" id="thr-fill"></div>
@@ -715,21 +721,21 @@ export class UIManager {
       this.menuDetailEl.querySelectorAll('[data-fmode]').forEach((el) => {
         el.addEventListener('click', () => {
           const fm = (el as HTMLElement).dataset.fmode as 'relaxed' | 'simulation';
-          this.physics.setAssistOptions({ flightMode: fm });
+          this.physics.setAssistOptions({ flightMode: fm }); this.hooks.onPersistSettings?.();
           this.renderMenuDetail();
         });
       });
 
       document.getElementById('toggle-alt-assist')?.addEventListener('click', () => {
-        this.physics.setAssistOptions({ altitudeAssist: !assist.altitudeAssist });
+        this.physics.setAssistOptions({ altitudeAssist: !assist.altitudeAssist }); this.hooks.onPersistSettings?.();
         this.renderMenuDetail();
       });
       document.getElementById('toggle-stall')?.addEventListener('click', () => {
-        this.physics.setAssistOptions({ stallSimulation: !assist.stallSimulation });
+        this.physics.setAssistOptions({ stallSimulation: !assist.stallSimulation }); this.hooks.onPersistSettings?.();
         this.renderMenuDetail();
       });
       document.getElementById('toggle-crash')?.addEventListener('click', () => {
-        this.physics.setAssistOptions({ collisionDamage: !assist.collisionDamage });
+        this.physics.setAssistOptions({ collisionDamage: !assist.collisionDamage }); this.hooks.onPersistSettings?.();
         this.renderMenuDetail();
       });
       return;
@@ -861,7 +867,15 @@ export class UIManager {
         <div class="panel-title">Graphics &amp; Performance</div>
         <div class="panel-desc">Live Frame Rate: <strong>${Math.round(this.hooks.getCurrentFps())} FPS</strong>. All files run from local browser storage for zero network lag.</div>
         <div class="card-list">${cards}</div>
+        <div style="margin-top:14px;" class="panel-title">Saved Settings</div>
+        <div class="panel-desc">Flight mode, graphics, aircraft, weather, time, HUD &amp; audio are remembered between visits.</div>
+        <button class="pill-btn" id="btn-reset-saved-settings">${iconSvg('reset', 12)}<span>Reset saved settings</span></button>
       `;
+      document.getElementById('btn-reset-saved-settings')?.addEventListener('click', () => {
+        this.hooks.onResetSavedSettings?.();
+        this.showToast('Saved settings cleared', 'reset');
+        this.renderMenuDetail();
+      });
 
       this.menuDetailEl.querySelectorAll('[data-gfx]').forEach((el) => {
         el.addEventListener('click', () => {
@@ -1044,7 +1058,19 @@ export class UIManager {
     return dirs[Math.round(deg / 45) % 8];
   }
 
+  private lastHintMode = '';
   public update(telemetry: FlightTelemetry, gpStatus: GameplayStatus, activeControlSource: string): void {
+    // v3 control hints: badge shows gamepad glyph when a pad is active, else keyboard cap
+    const useGp = this.input.isGamepadConnected() || activeControlSource === 'gamepad';
+    const hintMode = useGp ? 'gp' : 'kb';
+    if (hintMode !== this.lastHintMode) {
+      this.lastHintMode = hintMode;
+      const kb: Record<string, string> = { camera: 'C', weather: 'V', gear: 'G', time: 'T', zoom: 'Z', hud: 'H', reset: '⌫', pause: 'P', airbrake: 'Spc' };
+      this.root.querySelectorAll<HTMLElement>('.control-hint').forEach((el) => {
+        const a = el.dataset.hintAction || '';
+        el.textContent = useGp ? (this.input.getActionGamepadLabel(a) || kb[a] || '') : (kb[a] || '');
+      });
+    }
     const veilOpacity = Math.min(0.76, telemetry.cloudDensity * 0.8);
     this.cloudVeilEl.style.opacity = veilOpacity.toFixed(3);
 
@@ -1116,6 +1142,8 @@ export class UIManager {
       extraTag = ' <span class="hud-sep">·</span> <span class="hud-warn-tag">STALL</span>';
     } else if (telemetry.waterSkimIntensity > 0.2) {
       extraTag = ' <span class="hud-sep">·</span> <span class="hud-sky-tag">SEA SKIM</span>';
+    } else if (gpStatus.mode === 'missions') {
+      extraTag = ` <span class="hud-sep">·</span> MISSION ${gpStatus.missionIndex ?? 1}/${gpStatus.missionTotal ?? 6}${gpStatus.missionCompleted ? ' ✓' : ''}`;
     } else if (gpStatus.mode === 'scenic_journey') {
       const dStr =
         gpStatus.waypointDistanceM >= 1000
