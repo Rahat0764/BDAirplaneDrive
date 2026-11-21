@@ -978,3 +978,14 @@ body,
     display: none;
   }
 }
+
+/* v3 control hints: tiny badge below/beside each action button */
+.hud-icon-btn, .touch-circle-btn, .touch-airbrake-btn { position: relative; }
+.control-hint {
+  position: absolute; bottom: -7px; right: 1px;
+  font-size: 8px; line-height: 1; font-weight: 700; letter-spacing: .02em;
+  padding: 2px 4px; border-radius: 999px;
+  background: rgba(8,20,42,.85); color: #cbe5ff;
+  border: 1px solid rgba(190,224,255,.35);
+  pointer-events: none; white-space: nowrap; z-index: 3;
+}

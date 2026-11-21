@@ -634,6 +634,17 @@ export class InputManager {
     return out;
   }
 
+  /** v3: human label for the gamepad button bound to an action */
+  public getGamepadButtonLabel(action: keyof ControllerMapping): string {
+    const idx = this.settings.mapping[action];
+    const labels: Record<number, string> = {0:'✕',1:'○',2:'□',3:'△',4:'L1',5:'R1',6:'L2',7:'R2',8:'Share',9:'Options',10:'L3',11:'R3',12:'D↑',13:'D↓',14:'D←',15:'D→'};
+    return labels[idx] ?? `B${idx}`;
+  }
+  public getActionGamepadLabel(action: string): string {
+    const map: Record<string, keyof ControllerMapping> = { camera:'cameraBtn', weather:'weatherBtn', time:'timeBtn', gear:'gearBtn', airbrake:'airbrakeBtn', reset:'resetBtn', pause:'pauseBtn', hud:'hudBtn', zoom:'zoomBtn' };
+    const k = map[action]; return k ? this.getGamepadButtonLabel(k) : '';
+  }
+
   public isGamepadConnected(): boolean {
     return this.findActiveGamepad() !== null;
   }

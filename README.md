@@ -31,6 +31,21 @@ Soar between colossal white cumulus cloud towers, glide above patchwork emerald 
 
 ---
 
+## 🆕 Dream Flight v3.0 Update
+
+- **Simulation by default** — Simulation flight mode, stall simulation and collision damage are ON by default; Relaxed is opt-in in Settings → Flight.
+- **Ground takeoff by default** — Free Flight starts parked on Runway 36 (throttle 0, gear down). Throttle up and rotate like a real pilot; Landing Challenge still starts airborne on final.
+- **Realistic control feel** — control surfaces move with actuator lag (~120–180 ms in Simulation) and rate limits, plus angular inertia/damping, adverse yaw, prop torque, prop wash at low speed, and ground effect near the surface. Input polling itself has no artificial delay.
+- **Road, ground & crash physics** — per-surface rolling friction/braking (runway, highway, grass), speed-fading wheel steering, suspension with gear compression and touchdown bounce, and crashes that slide to rest with friction. Gear-up belly landings scrape and decelerate instead of always crashing.
+- **Ground-penetration fix** — a hard post-physics clamp guarantees the aircraft can never sink below the terrain/runway/highway/water surface (accounting for gear clearance and suspension compression).
+- **Water & ocean** — slow-speed hull draft/sink with stronger drag, wave bobbing and planing, plus the existing open ocean with Gerstner waves.
+- **Missions** — a new 6-mission campaign (First Takeoff, Climb Through the Ring, Valley Cruise, Lake Skim, Ocean Tour, Full Circuit Landing) with objectives, banners and progress saved in the browser.
+- **Control hints** — every HUD/touch button shows a tiny badge: the gamepad glyph (✕, L1, R1, △, R3…) when a controller is connected — following your current remapping — or the keyboard key cap (G, C, V, T, Z, H…) otherwise.
+- **Settings persistence** — flight mode/assists, graphics, aircraft, weather, time-of-day, HUD mode and audio are remembered in `localStorage` (`dream_flight_settings_v1`) and restored on load, with a “Reset saved settings” button in Graphics.
+- **Graphics & FPS** — more responsive adaptive resolution (checks every 0.5 s, steps down below 45 FPS, up above 57 FPS, now also on Ultra), trimmed DPR caps (High 1.75×, Ultra 2.0×), improved slope-rock/altitude-snow terrain blending with cheaper shader noise, and zero per-frame allocations in the physics hot loop.
+
+---
+
 ## 🚀 Local Development & Production Build
 
 ```bash

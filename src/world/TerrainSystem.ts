@@ -357,7 +357,7 @@ export class TerrainSystem {
           float tfbm(vec2 p) {
             float s = 0.0;
             float a = 0.5;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 3; i++) {
               s += a * tnoise(p);
               p = p * 2.05 + vec2(11.3, 7.9);
               a *= 0.5;
@@ -414,14 +414,14 @@ export class TerrainSystem {
           landColor = mix(landColor, sandColor, beachMask * (1.0 - smoothstep(0.25, 0.5, slope)));
 
           // Clean warm-limestone & cool-slate cliff faces
-          float rockMask = smoothstep(0.22, 0.45, slope + max(0.0, h - 380.0) * 0.00045);
+          float rockMask = smoothstep(0.18, 0.38, slope + max(0.0, h - 320.0) * 0.00065);
           float strata = tnoise(vec2(wp.x * 0.008, h * 0.055));
           vec3 rockCol = mix(vec3(0.35, 0.36, 0.39), vec3(0.54, 0.51, 0.47), strata * 0.72 + microVar * 0.28);
           landColor = mix(landColor, rockCol, clamp(rockMask, 0.0, 1.0));
 
           // Crisp sunlit alpine snow peaks
-          float snowHeightMask = smoothstep(555.0, 760.0, h + macroVar * 90.0);
-          float snowSlopeKeep = 1.0 - smoothstep(0.42, 0.72, slope);
+          float snowHeightMask = smoothstep(500.0, 700.0, h + macroVar * 110.0);
+          float snowSlopeKeep = 1.0 - smoothstep(0.38, 0.62, slope);
           float snowMask = clamp(snowHeightMask * (0.35 + 0.65 * snowSlopeKeep), 0.0, 1.0);
           vec3 snowCol = vec3(0.96, 0.98, 1.0) * (0.95 + 0.05 * microVar);
           landColor = mix(landColor, snowCol, snowMask);

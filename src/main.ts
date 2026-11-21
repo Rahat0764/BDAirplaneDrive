@@ -7,6 +7,7 @@ import { InputManager } from './controls/InputManager';
 import { FlightPhysics } from './flight/FlightPhysics';
 import { GameplayManager } from './gameplay/GameplayManager';
 import { OfflineInstaller } from './offline/OfflineInstaller';
+import { clearSavedSettings, loadSavedSettings, saveSettings } from './settings/persistence';
 import {
   AircraftVariantId,
   AtmospherePreset,
@@ -72,7 +73,10 @@ class DreamFlightApp {
 
   constructor(installer: OfflineInstaller) {
     const canvas = document.getElementById('flight-canvas') as HTMLCanvasElement;
-    this.activeGraphicsId = detectRecommendedGraphicsPreset();
+    const saved = loadSavedSettings();
+    this.activeGraphicsId = saved.graphics ?? detectRecommendedGraphicsPreset();
+    if (saved.autoDayNight !== undefined) this.autoDayNight = saved.autoDayNight;
+    if (!this.autoDayNight && saved.manualHour !== undefined) this.currentHour = saved.manualHour;
     const initialQuality = GRAPHICS_PRESETS[this.activeGraphicsId];
 
     this.renderer = new THREE.WebGLRenderer({
@@ -100,6 +104,11 @@ class DreamFlightApp {
     this.cameraSys = new CameraSystem(window.innerWidth / Math.max(1, window.innerHeight));
     this.audio = new AudioSystem();
     this.gameplay = new GameplayManager(this.scene);
+
+    if (saved.assists) this.physics.setAssistOptions(saved.assists);
+    if (saved.audio) { this.audio.settings = { ...this.audio.settings, ...saved.audio }; }
+    if (saved.aircraft) { this.aircraft.buildVariant(saved.aircraft); this.physics.setVariant(saved.aircraft); }
+    if (saved.weather) this.activeWeatherId = saved.weather;
 
     this.activeCompositeAtm = computeAtmosphereForHour(this.currentHour);
 
@@ -139,6 +148,7 @@ class DreamFlightApp {
         onSelectAircraft: (variant: AircraftVariantId) => {
           this.aircraft.buildVariant(variant);
           this.physics.setVariant(variant);
+          this.persistSettings();
           this.aircraft.resetTrails(this.physics.telemetry.position);
         },
         onSelectAtmosphere: (presetId: AtmospherePresetId) => {
@@ -149,12 +159,14 @@ class DreamFlightApp {
         },
         onSelectWeather: (weatherId: WeatherPresetId) => {
           this.applyWeather(weatherId, true);
+          this.persistSettings();
         },
         onCycleWeather: () => {
           this.cycleWeather();
         },
         onSetAutoDayNight: (enabled: boolean) => {
           this.autoDayNight = enabled;
+          this.persistSettings();
           if (enabled) {
             this.currentHour = getCurrentLocalHour();
             this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
@@ -168,9 +180,11 @@ class DreamFlightApp {
           this.autoDayNight = false;
           this.currentHour = hour;
           this.refreshEnvironment(computeAtmosphereForHour(hour));
+          this.persistSettings();
         },
         onSelectGraphics: (gfxId: GraphicsPresetId) => {
           this.applyGraphics(gfxId);
+          this.persistSettings();
         },
         getActiveAircraft: () => this.aircraft.getVariant(),
         getActiveAtmosphere: () => this.activeAtmosphereId,
@@ -179,11 +193,14 @@ class DreamFlightApp {
         getCurrentHour: () => this.currentHour,
         getActiveGraphics: () => this.activeGraphicsId,
         getCurrentFps: () => this.currentFps,
+        onPersistSettings: () => this.persistSettings(),
+        onResetSavedSettings: () => { clearSavedSettings(); },
       }
     );
+    if (saved.hudMode) this.ui.setHudMode(saved.hudMode);
 
     // Initialize Real-Time Day-Night Sky + Default Ghibli Cumulus Weather
-    this.applyWeather('ghibli_cumulus', false);
+    this.applyWeather(this.activeWeatherId, false);
     this.refreshEnvironment(computeAtmosphereForHour(this.currentHour));
     this.aircraft.resetTrails(this.physics.telemetry.position);
     this.cameraSys.snapToAircraft(this.physics.telemetry);
@@ -209,6 +226,20 @@ class DreamFlightApp {
 
     this.clock.start();
     this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  private persistSettings(): void {
+    saveSettings({
+      assists: this.physics.getAssistOptions(),
+      graphics: this.activeGraphicsId,
+      aircraft: this.aircraft.getVariant(),
+      weather: this.activeWeatherId,
+      autoDayNight: this.autoDayNight,
+      manualHour: this.currentHour,
+      hudMode: this.ui ? this.ui.getHudMode() : undefined,
+      audio: { ...this.audio.settings },
+      cameraMode: this.cameraSys.getMode(),
+    });
   }
 
   private refreshEnvironment(baseAtm: AtmospherePreset): void {
@@ -299,7 +330,7 @@ class DreamFlightApp {
   private updateAdaptivePerformance(dt: number): void {
     this.fpsFrames++;
     this.fpsAccumTime += dt;
-    if (this.fpsAccumTime < 1.0) return;
+    if (this.fpsAccumTime < 0.5) return;
 
     this.currentFps = this.fpsFrames / this.fpsAccumTime;
     this.fpsFrames = 0;
@@ -308,11 +339,11 @@ class DreamFlightApp {
     const q = GRAPHICS_PRESETS[this.activeGraphicsId];
     if (!q.adaptiveResolution) return;
 
-    if (this.currentFps < 28 && this.adaptiveDprScale > 0.76) {
-      this.adaptiveDprScale = Math.max(0.75, this.adaptiveDprScale - 0.1);
+    if (this.currentFps < 45 && this.adaptiveDprScale > 0.62) {
+      this.adaptiveDprScale = Math.max(0.6, this.adaptiveDprScale - 0.12);
       this.updateRendererSize();
-    } else if (this.currentFps > 54 && this.adaptiveDprScale < 1.0) {
-      this.adaptiveDprScale = Math.min(1.0, this.adaptiveDprScale + 0.06);
+    } else if (this.currentFps > 57 && this.adaptiveDprScale < 1.0) {
+      this.adaptiveDprScale = Math.min(1.0, this.adaptiveDprScale + 0.08);
       this.updateRendererSize();
     }
   }

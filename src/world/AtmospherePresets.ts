@@ -442,7 +442,7 @@ export const GRAPHICS_PRESETS: Record<GraphicsPresetId, GraphicsConfig> = {
   high: {
     id: 'high',
     label: 'High (Cinematic Detail)',
-    maxDpr: 2.0,
+    maxDpr: 1.75,
     adaptiveResolution: true,
     shadowsEnabled: true,
     shadowMapSize: 2048,
@@ -458,8 +458,8 @@ export const GRAPHICS_PRESETS: Record<GraphicsPresetId, GraphicsConfig> = {
   ultra: {
     id: 'ultra',
     label: 'Ultra (Maximum Fidelity)',
-    maxDpr: 2.25,
-    adaptiveResolution: false,
+    maxDpr: 2.0,
+    adaptiveResolution: true,
     shadowsEnabled: true,
     shadowMapSize: 2048,
     cloudClusterCount: 104,
